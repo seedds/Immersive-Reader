@@ -10,6 +10,23 @@ import Darwin
 import Combine
 import SwiftData
 
+enum LocalLibraryError: LocalizedError {
+    case bookNotFound
+    case duplicateFilename(String)
+    case invalidFilename
+
+    var errorDescription: String? {
+        switch self {
+        case .bookNotFound:
+            "The selected book could not be found."
+        case .duplicateFilename(let filename):
+            "A book named \(filename) already exists."
+        case .invalidFilename:
+            "Enter a valid EPUB filename."
+        }
+    }
+}
+
 @MainActor
 final class UploadServerController: ObservableObject {
     enum Status: Equatable {
@@ -61,6 +78,38 @@ final class UploadServerController: ObservableObject {
                 }
             }
         }
+        server.onBooksRequested = { [weak self] completion in
+            Task { @MainActor in
+                do {
+                    guard let self else { throw LocalLibraryError.bookNotFound }
+                    completion(.success(try self.booksJSON(modelContext: modelContext)))
+                } catch {
+                    completion(.failure(error))
+                }
+            }
+        }
+        server.onRenameRequested = { [weak self] bookId, filename, completion in
+            Task { @MainActor in
+                do {
+                    guard let self else { throw LocalLibraryError.bookNotFound }
+                    try self.renameBook(id: bookId, to: filename, modelContext: modelContext)
+                    completion(.success(try self.booksJSON(modelContext: modelContext)))
+                } catch {
+                    completion(.failure(error))
+                }
+            }
+        }
+        server.onDeleteRequested = { [weak self] bookId, completion in
+            Task { @MainActor in
+                do {
+                    guard let self else { throw LocalLibraryError.bookNotFound }
+                    try self.deleteBook(id: bookId, modelContext: modelContext)
+                    completion(.success(try self.booksJSON(modelContext: modelContext)))
+                } catch {
+                    completion(.failure(error))
+                }
+            }
+        }
         server.onError = { [weak self] message in
             Task { @MainActor in
                 self?.status = .failed(message)
@@ -80,6 +129,87 @@ final class UploadServerController: ObservableObject {
         server?.stop()
         server = nil
         status = .stopped
+    }
+
+    private func booksJSON(modelContext: ModelContext) throws -> Data {
+        let descriptor = FetchDescriptor<Book>(
+            sortBy: [SortDescriptor(\Book.importedAt, order: .reverse)]
+        )
+        let books = try modelContext.fetch(descriptor)
+        let fileManager = FileManager.default
+        let dateFormatter = ISO8601DateFormatter()
+
+        let payload = books.map { book -> [String: Any] in
+            let attributes = try? fileManager.attributesOfItem(atPath: book.epubFilePath)
+            let fileSize = attributes?[.size] as? Int64 ?? 0
+            return [
+                "id": book.id.uuidString,
+                "title": book.title,
+                "author": book.author,
+                "filename": book.originalFilename,
+                "importedAt": dateFormatter.string(from: book.importedAt),
+                "fileSize": fileSize,
+            ]
+        }
+
+        return try JSONSerialization.data(withJSONObject: ["books": payload], options: [])
+    }
+
+    private func renameBook(id: UUID, to requestedFilename: String, modelContext: ModelContext) throws {
+        let book = try findBook(id: id, modelContext: modelContext)
+        let filename = epubFilename(from: requestedFilename)
+        guard !filename.isEmpty else {
+            throw LocalLibraryError.invalidFilename
+        }
+
+        let fileManager = FileManager.default
+        let libraryDirectory = try AppStorage.documentsDirectory()
+        let destinationURL = libraryDirectory.appendingPathComponent(filename, isDirectory: false)
+        let sourceURL = URL(fileURLWithPath: book.epubFilePath)
+
+        if destinationURL.path != sourceURL.path, fileManager.fileExists(atPath: destinationURL.path) {
+            throw LocalLibraryError.duplicateFilename(filename)
+        }
+
+        if destinationURL.path != sourceURL.path {
+            try fileManager.moveItem(at: sourceURL, to: destinationURL)
+        }
+
+        book.originalFilename = filename
+        book.title = displayTitle(for: filename)
+        book.epubFilePath = destinationURL.path
+        try modelContext.save()
+    }
+
+    private func deleteBook(id: UUID, modelContext: ModelContext) throws {
+        let book = try findBook(id: id, modelContext: modelContext)
+        try? FileManager.default.removeItem(atPath: book.epubFilePath)
+        try? FileManager.default.removeItem(atPath: book.extractedDirectoryPath)
+        modelContext.delete(book)
+        try modelContext.save()
+    }
+
+    private func findBook(id: UUID, modelContext: ModelContext) throws -> Book {
+        let descriptor = FetchDescriptor<Book>()
+        guard let book = try modelContext.fetch(descriptor).first(where: { $0.id == id }) else {
+            throw LocalLibraryError.bookNotFound
+        }
+        return book
+    }
+
+    private func epubFilename(from filename: String) -> String {
+        let sanitized = AppStorage.sanitizedFilename(filename)
+        if sanitized.lowercased().hasSuffix(".epub") {
+            return sanitized
+        }
+        return "\(sanitized).epub"
+    }
+
+    private func displayTitle(for filename: String) -> String {
+        URL(fileURLWithPath: filename)
+            .deletingPathExtension()
+            .lastPathComponent
+            .replacingOccurrences(of: "_", with: " ")
     }
 
     private static func localIPAddress() -> String? {

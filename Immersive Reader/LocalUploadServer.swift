@@ -23,8 +23,13 @@ enum LocalUploadServerError: LocalizedError {
 }
 
 final class LocalUploadServer {
+    typealias APICompletion = (Result<Data, Error>) -> Void
+
     let port: UInt16
     var onUploadFinished: ((URL, String) -> Void)?
+    var onBooksRequested: (((@escaping APICompletion) -> Void))?
+    var onRenameRequested: ((UUID, String, @escaping APICompletion) -> Void)?
+    var onDeleteRequested: ((UUID, @escaping APICompletion) -> Void)?
     var onError: ((String) -> Void)?
 
     private let queue = DispatchQueue(label: "ImmersiveReader.LocalUploadServer")
@@ -76,6 +81,9 @@ final class LocalUploadServer {
         uploadConnection.onUploadFinished = { [weak self] url, filename in
             self?.onUploadFinished?(url, filename)
         }
+        uploadConnection.onBooksRequested = onBooksRequested
+        uploadConnection.onRenameRequested = onRenameRequested
+        uploadConnection.onDeleteRequested = onDeleteRequested
         uploadConnection.onError = { [weak self] message in
             self?.onError?(message)
         }
@@ -88,7 +96,12 @@ final class LocalUploadServer {
 }
 
 private final class HTTPUploadConnection {
+    typealias APICompletion = LocalUploadServer.APICompletion
+
     var onUploadFinished: ((URL, String) -> Void)?
+    var onBooksRequested: (((@escaping APICompletion) -> Void))?
+    var onRenameRequested: ((UUID, String, @escaping APICompletion) -> Void)?
+    var onDeleteRequested: ((UUID, @escaping APICompletion) -> Void)?
     var onError: ((String) -> Void)?
     var onComplete: (() -> Void)?
 
@@ -176,6 +189,21 @@ private final class HTTPUploadConnection {
             return
         }
 
+        if method == "GET", target == "/api/books" {
+            requestBooks()
+            return
+        }
+
+        if method == "POST", let renameRequest = renameRequest(from: target) {
+            requestRename(bookId: renameRequest.bookId, filename: renameRequest.filename)
+            return
+        }
+
+        if method == "DELETE", let bookId = deleteBookId(from: target) {
+            requestDelete(bookId: bookId)
+            return
+        }
+
         guard method == "POST" else {
             finishWithHTTP(status: 405, body: "Method Not Allowed")
             return
@@ -213,6 +241,57 @@ private final class HTTPUploadConnection {
             finishUpload()
         } else {
             receiveBody()
+        }
+    }
+
+    private func requestBooks() {
+        guard let onBooksRequested else {
+            finishWithHTTP(status: 500, body: "Book listing is not available")
+            return
+        }
+
+        onBooksRequested { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let data):
+                self.finishWithJSON(data)
+            case .failure(let error):
+                self.finishWithHTTP(status: 400, body: error.localizedDescription)
+            }
+        }
+    }
+
+    private func requestRename(bookId: UUID, filename: String) {
+        guard let onRenameRequested else {
+            finishWithHTTP(status: 500, body: "Rename is not available")
+            return
+        }
+
+        onRenameRequested(bookId, filename) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let data):
+                self.finishWithJSON(data)
+            case .failure(let error):
+                self.finishWithHTTP(status: 400, body: error.localizedDescription)
+            }
+        }
+    }
+
+    private func requestDelete(bookId: UUID) {
+        guard let onDeleteRequested else {
+            finishWithHTTP(status: 500, body: "Delete is not available")
+            return
+        }
+
+        onDeleteRequested(bookId) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let data):
+                self.finishWithJSON(data)
+            case .failure(let error):
+                self.finishWithHTTP(status: 400, body: error.localizedDescription)
+            }
         }
     }
 
@@ -296,6 +375,10 @@ private final class HTTPUploadConnection {
         finish(status: 200, contentType: "text/html; charset=utf-8", body: Data(html.utf8))
     }
 
+    private func finishWithJSON(_ data: Data) {
+        finish(status: 200, contentType: "application/json; charset=utf-8", body: data)
+    }
+
     private func finishWithHTTP(status: Int, body: String) {
         finish(status: status, contentType: "text/plain; charset=utf-8", body: Data(body.utf8))
     }
@@ -349,6 +432,41 @@ private final class HTTPUploadConnection {
             .map(AppStorage.sanitizedFilename)
     }
 
+    private func renameRequest(from target: String) -> (bookId: UUID, filename: String)? {
+        guard let components = URLComponents(string: "http://localhost\(target)") else {
+            return nil
+        }
+
+        let pathParts = components.path.split(separator: "/").map(String.init)
+        guard pathParts.count == 4,
+              pathParts[0] == "api",
+              pathParts[1] == "books",
+              pathParts[3] == "rename",
+              let bookId = UUID(uuidString: pathParts[2]),
+              let filename = components.queryItems?.first(where: { $0.name == "filename" })?.value
+        else {
+            return nil
+        }
+
+        return (bookId, AppStorage.sanitizedFilename(filename))
+    }
+
+    private func deleteBookId(from target: String) -> UUID? {
+        guard let components = URLComponents(string: "http://localhost\(target)") else {
+            return nil
+        }
+
+        let pathParts = components.path.split(separator: "/").map(String.init)
+        guard pathParts.count == 3,
+              pathParts[0] == "api",
+              pathParts[1] == "books"
+        else {
+            return nil
+        }
+
+        return UUID(uuidString: pathParts[2])
+    }
+
     private func reasonPhrase(for status: Int) -> String {
         switch status {
         case 200: "OK"
@@ -368,41 +486,176 @@ private final class HTTPUploadConnection {
         <html>
         <head>
           <meta name="viewport" content="width=device-width, initial-scale=1">
-          <title>Immersive Reader Upload</title>
+          <title>Immersive Reader Files</title>
           <style>
-            body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f5f1e8; color: #211a12; }
-            main { width: min(640px, calc(100vw - 32px)); background: white; border-radius: 24px; padding: 32px; box-shadow: 0 24px 80px rgba(60, 38, 15, .16); }
-            h1 { margin: 0 0 8px; font-size: 32px; }
+            :root { color-scheme: light; }
+            * { box-sizing: border-box; }
+            body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 0; min-height: 100vh; background: #f5f1e8; color: #211a12; }
+            main { width: min(980px, calc(100vw - 32px)); margin: 32px auto; }
+            header { margin-bottom: 22px; }
+            h1 { margin: 0 0 8px; font-size: clamp(32px, 7vw, 56px); letter-spacing: -.04em; }
+            h2 { margin: 0 0 14px; font-size: 22px; }
             p { color: #6b6258; line-height: 1.5; }
-            .drop { border: 2px dashed #b88a44; border-radius: 18px; padding: 36px; text-align: center; background: #fffaf1; }
-            input { margin-top: 18px; }
-            button { margin-top: 18px; border: 0; border-radius: 999px; padding: 12px 18px; background: #1e5bff; color: white; font-weight: 700; cursor: pointer; }
+            section { background: white; border-radius: 24px; padding: 24px; box-shadow: 0 24px 80px rgba(60, 38, 15, .14); margin-bottom: 18px; }
+            .drop { border: 2px dashed #b88a44; border-radius: 18px; padding: 26px; text-align: center; background: #fffaf1; }
+            input { max-width: 100%; }
+            button { border: 0; border-radius: 999px; padding: 10px 14px; background: #1e5bff; color: white; font-weight: 700; cursor: pointer; }
+            button.secondary { background: #eadfce; color: #33261a; }
+            button.danger { background: #c93528; }
             button:disabled { opacity: .45; cursor: not-allowed; }
-            #status { margin-top: 18px; font-weight: 600; }
+            #status { min-height: 24px; margin-top: 14px; font-weight: 700; }
+            #status.error { color: #c93528; }
+            #status.success { color: #20764c; }
+            .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+            .books { display: grid; gap: 12px; }
+            .book { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; align-items: center; padding: 16px; border: 1px solid #eee4d3; border-radius: 18px; background: #fffdf8; }
+            .title { font-weight: 800; font-size: 17px; }
+            .meta { margin-top: 4px; color: #786f66; font-size: 13px; overflow-wrap: anywhere; }
+            .actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+            .empty { color: #786f66; padding: 18px; border: 1px dashed #d8c7ad; border-radius: 18px; background: #fffaf1; }
+            @media (max-width: 640px) {
+              main { width: min(100vw - 20px, 980px); margin: 18px auto; }
+              section { padding: 18px; border-radius: 20px; }
+              .book { grid-template-columns: 1fr; }
+              .actions { justify-content: flex-start; }
+            }
           </style>
         </head>
         <body>
           <main>
-            <h1>Upload EPUB</h1>
-            <p>Choose an EPUB file from this computer. Keep Immersive Reader open while the upload finishes.</p>
-            <div class="drop">
-              <strong>Select an .epub file</strong><br>
-              <input id="file" type="file" accept=".epub,application/epub+zip">
-              <br>
-              <button id="upload">Upload</button>
-              <div id="status"></div>
-            </div>
+            <header>
+              <h1>Immersive Reader Files</h1>
+              <p>Upload, rename, and delete EPUB files stored on this iPhone. Keep Immersive Reader open while managing files.</p>
+            </header>
+
+            <section>
+              <h2>Upload EPUB</h2>
+              <div class="drop">
+                <strong>Select an .epub file</strong><br><br>
+                <input id="file" type="file" accept=".epub,application/epub+zip">
+                <br><br>
+                <button id="upload">Upload</button>
+                <div id="status"></div>
+              </div>
+            </section>
+
+            <section>
+              <div class="toolbar">
+                <h2>Files on iPhone</h2>
+                <button class="secondary" id="refresh">Refresh</button>
+              </div>
+              <div id="books" class="books"></div>
+            </section>
           </main>
           <script>
             const input = document.getElementById('file');
             const button = document.getElementById('upload');
+            const refresh = document.getElementById('refresh');
             const status = document.getElementById('status');
+            const books = document.getElementById('books');
+
+            function setStatus(message, type = '') {
+              status.textContent = message;
+              status.className = type;
+            }
+
+            function escapeHTML(value) {
+              return String(value).replace(/[&<>'"]/g, character => ({
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                "'": '&#39;',
+                '"': '&quot;'
+              }[character]));
+            }
+
+            function formatBytes(bytes) {
+              if (!bytes) return '0 B';
+              const units = ['B', 'KB', 'MB', 'GB'];
+              let value = bytes;
+              let unit = 0;
+              while (value >= 1024 && unit < units.length - 1) {
+                value /= 1024;
+                unit += 1;
+              }
+              return `${value.toFixed(value >= 10 || unit === 0 ? 0 : 1)} ${units[unit]}`;
+            }
+
+            async function requestText(url, options = {}) {
+              const response = await fetch(url, options);
+              if (!response.ok) {
+                throw new Error(await response.text());
+              }
+              return response;
+            }
+
+            async function loadBooks() {
+              books.innerHTML = '<div class="empty">Loading files...</div>';
+              try {
+                const response = await requestText('/api/books');
+                const payload = await response.json();
+                renderBooks(payload.books || []);
+              } catch (error) {
+                books.innerHTML = `<div class="empty">Could not load files: ${escapeHTML(error.message)}</div>`;
+              }
+            }
+
+            function renderBooks(items) {
+              if (!items.length) {
+                books.innerHTML = '<div class="empty">No EPUB files are imported yet.</div>';
+                return;
+              }
+
+              books.innerHTML = items.map(book => `
+                <article class="book" data-id="${escapeHTML(book.id)}" data-filename="${escapeHTML(book.filename)}">
+                  <div>
+                    <div class="title">${escapeHTML(book.title)}</div>
+                    <div class="meta">${escapeHTML(book.filename)} &middot; ${formatBytes(book.fileSize)}</div>
+                  </div>
+                  <div class="actions">
+                    <button class="secondary" data-action="rename">Rename</button>
+                    <button class="danger" data-action="delete">Delete</button>
+                  </div>
+                </article>
+              `).join('');
+            }
+
+            books.onclick = async event => {
+              const action = event.target.dataset.action;
+              if (!action) return;
+
+              const row = event.target.closest('.book');
+              const id = row.dataset.id;
+              const currentFilename = row.dataset.filename;
+
+              try {
+                if (action === 'rename') {
+                  const filename = prompt('Rename EPUB file:', currentFilename);
+                  if (!filename) return;
+                  const response = await requestText(`/api/books/${encodeURIComponent(id)}/rename?filename=${encodeURIComponent(filename)}`, { method: 'POST' });
+                  const payload = await response.json();
+                  renderBooks(payload.books || []);
+                  setStatus('Renamed file.', 'success');
+                }
+
+                if (action === 'delete') {
+                  if (!confirm(`Delete ${currentFilename} from this iPhone?`)) return;
+                  const response = await requestText(`/api/books/${encodeURIComponent(id)}`, { method: 'DELETE' });
+                  const payload = await response.json();
+                  renderBooks(payload.books || []);
+                  setStatus('Deleted file.', 'success');
+                }
+              } catch (error) {
+                setStatus(error.message, 'error');
+              }
+            };
+
             button.onclick = async () => {
               const file = input.files[0];
-              if (!file) { status.textContent = 'Choose a file first.'; return; }
-              if (!file.name.toLowerCase().endsWith('.epub')) { status.textContent = 'Only .epub files are supported.'; return; }
+              if (!file) { setStatus('Choose a file first.', 'error'); return; }
+              if (!file.name.toLowerCase().endsWith('.epub')) { setStatus('Only .epub files are supported.', 'error'); return; }
               button.disabled = true;
-              status.textContent = 'Uploading...';
+              setStatus('Uploading...');
               try {
                 const response = await fetch('/upload?filename=' + encodeURIComponent(file.name), {
                   method: 'POST',
@@ -410,13 +663,19 @@ private final class HTTPUploadConnection {
                   body: file
                 });
                 const text = await response.text();
-                status.textContent = response.ok ? text : 'Upload failed: ' + text;
+                if (!response.ok) throw new Error(text);
+                setStatus(text, 'success');
+                input.value = '';
+                await loadBooks();
               } catch (error) {
-                status.textContent = 'Upload failed: ' + error;
+                setStatus('Upload failed: ' + error.message, 'error');
               } finally {
                 button.disabled = false;
               }
             };
+
+            refresh.onclick = loadBooks;
+            loadBooks();
           </script>
         </body>
         </html>
