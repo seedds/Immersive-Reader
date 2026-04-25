@@ -29,7 +29,8 @@ final class MediaOverlayPlaybackController: ObservableObject {
     @Published private(set) var currentClipIndex: Int?
 
     private var player: AVPlayer?
-    private var timeObserver: Any?
+    private var boundaryObserver: Any?
+    private var endObserver: NSObjectProtocol?
 
     var currentClip: EPUBMediaOverlayClip? {
         guard let currentClipIndex, clips.indices.contains(currentClipIndex) else {
@@ -96,6 +97,7 @@ final class MediaOverlayPlaybackController: ObservableObject {
 
     func pause() {
         player?.pause()
+        deactivateAudioSession()
         if clips.isEmpty {
             state = .unavailable
         } else {
@@ -105,9 +107,10 @@ final class MediaOverlayPlaybackController: ObservableObject {
 
     func stop() {
         player?.pause()
-        removeTimeObserver()
+        removeObservers()
         player = nil
-        currentClipIndex = clips.isEmpty ? nil : 0
+        deactivateAudioSession()
+        currentClipIndex = clips.isEmpty ? nil : currentClipIndex
         state = clips.isEmpty ? .unavailable : .ready
     }
 
@@ -128,7 +131,10 @@ final class MediaOverlayPlaybackController: ObservableObject {
 
         let nextIndex = clips.index(after: currentClipIndex)
         guard clips.indices.contains(nextIndex) else {
-            stop()
+            player?.pause()
+            removeObservers()
+            deactivateAudioSession()
+            state = .ready
             return
         }
 
@@ -139,43 +145,83 @@ final class MediaOverlayPlaybackController: ObservableObject {
     }
 
     private func start(_ clip: EPUBMediaOverlayClip) {
-        removeTimeObserver()
+        removeObservers()
+
+        do {
+            try configureAudioSession()
+        } catch {
+            state = .failed(error.localizedDescription)
+            return
+        }
 
         let player = AVPlayer(url: URL(fileURLWithPath: clip.audioPath))
         self.player = player
         player.seek(to: CMTime(seconds: clip.clipBegin, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
-                self.addTimeObserver(for: clip)
+                self.addObservers(for: clip)
                 player.play()
                 self.state = .playing
             }
         }
     }
 
-    private func addTimeObserver(for clip: EPUBMediaOverlayClip) {
+    private func addObservers(for clip: EPUBMediaOverlayClip) {
         guard let player else { return }
 
-        timeObserver = player.addPeriodicTimeObserver(
-            forInterval: CMTime(seconds: 0.1, preferredTimescale: 600),
-            queue: .main
-        ) { [weak self] time in
-            guard let self else { return }
-            Task { @MainActor in
-                let seconds = time.seconds
-                if let clipEnd = clip.clipEnd, seconds >= clipEnd {
-                    self.nextClip()
-                } else if clip.clipEnd == nil, player.currentItem?.status == .failed {
-                    self.nextClip()
-                }
+        if let clipEnd = clip.clipEnd, clipEnd > clip.clipBegin {
+            boundaryObserver = player.addBoundaryTimeObserver(
+                forTimes: [NSValue(time: CMTime(seconds: clipEnd, preferredTimescale: 600))],
+                queue: .main
+            ) { [weak self] in
+                self?.nextClip()
+            }
+        }
+
+        if clip.clipEnd == nil, let item = player.currentItem {
+            endObserver = NotificationCenter.default.addObserver(
+                forName: .AVPlayerItemDidPlayToEndTime,
+                object: item,
+                queue: .main
+            ) { [weak self] _ in
+                self?.nextClip()
             }
         }
     }
 
-    private func removeTimeObserver() {
-        if let timeObserver, let player {
-            player.removeTimeObserver(timeObserver)
+    private func removeObservers() {
+        if let boundaryObserver, let player {
+            player.removeTimeObserver(boundaryObserver)
         }
-        timeObserver = nil
+        boundaryObserver = nil
+
+        if let endObserver {
+            NotificationCenter.default.removeObserver(endObserver)
+        }
+        endObserver = nil
+    }
+
+    private func configureAudioSession() throws {
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.playback, mode: .default)
+        try session.setActive(true)
+    }
+
+    private func deactivateAudioSession() {
+        try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+    }
+
+    deinit {
+        let player = player
+        let boundaryObserver = boundaryObserver
+        let endObserver = endObserver
+        DispatchQueue.main.async {
+            if let boundaryObserver, let player {
+                player.removeTimeObserver(boundaryObserver)
+            }
+            if let endObserver {
+                NotificationCenter.default.removeObserver(endObserver)
+            }
+        }
     }
 }

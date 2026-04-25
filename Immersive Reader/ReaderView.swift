@@ -39,20 +39,24 @@ struct ReaderView: View {
                             playPause: {
                                 playback.togglePlayback()
                                 navigateToCurrentClip(with: navigator)
+                                applyCurrentClipDecoration(with: navigator)
                             },
                             previous: {
                                 playback.previousClip()
                                 navigateToCurrentClip(with: navigator)
+                                applyCurrentClipDecoration(with: navigator)
                             },
                             next: {
                                 playback.nextClip()
                                 navigateToCurrentClip(with: navigator)
+                                applyCurrentClipDecoration(with: navigator)
                             }
                         )
                     }
                 }
                 .onChange(of: playback.currentClipIndex) { _, _ in
                     navigateToCurrentClip(with: navigator)
+                    applyCurrentClipDecoration(with: navigator)
                 }
 
             case .failed(let message):
@@ -67,6 +71,9 @@ struct ReaderView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task(id: book.id) {
             await openBook()
+        }
+        .onDisappear {
+            playback.stop()
         }
     }
 
@@ -128,7 +135,42 @@ struct ReaderView: View {
             await navigator.go(to: locator, options: .animated)
         }
     }
+
+    @MainActor
+    private func applyCurrentClipDecoration(with navigator: EPUBNavigatorViewController) {
+        guard let decorableNavigator = navigator as? DecorableNavigator else {
+            return
+        }
+
+        guard let clip = playback.currentClip,
+              let href = RelativeURL(epubHREF: clip.textResourceHref)
+        else {
+            decorableNavigator.apply(decorations: [], in: mediaOverlayDecorationGroup)
+            return
+        }
+
+        let locator = Locator(
+            href: href,
+            mediaType: .xhtml,
+            locations: Locator.Locations(
+                fragments: clip.fragmentID.map { [$0] } ?? []
+            )
+        )
+
+        decorableNavigator.apply(
+            decorations: [
+                Decoration(
+                    id: "media-overlay-active",
+                    locator: locator,
+                    style: .highlight(tint: .systemGreen, isActive: true)
+                ),
+            ],
+            in: mediaOverlayDecorationGroup
+        )
+    }
 }
+
+private let mediaOverlayDecorationGroup = "media-overlay"
 
 private enum ReaderState {
     case loading
