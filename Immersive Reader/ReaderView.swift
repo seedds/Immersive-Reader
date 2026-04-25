@@ -26,6 +26,7 @@ struct ReaderView: View {
     @State private var currentLocationReference: EPUBReference?
     @State private var scrollSettledPlaybackTask: Task<Void, Never>?
     @State private var suppressNextClipNavigation = false
+    @State private var suppressNextTapPlaybackNavigation = false
     @State private var programmaticPlaybackScrollState: ProgrammaticPlaybackScrollState?
 
     var body: some View {
@@ -334,6 +335,7 @@ struct ReaderView: View {
             return
         }
 
+        suppressNextTapPlaybackNavigation = true
         playback.selectClip(at: clipIndex, autoplay: true)
         applyCurrentClipDecoration(with: navigator)
     }
@@ -415,6 +417,11 @@ struct ReaderView: View {
     private func handleCurrentClipChange(oldIndex: Int?, newIndex: Int?, navigator: EPUBNavigatorViewController) {
         applyCurrentClipDecoration(with: navigator)
 
+        if suppressNextTapPlaybackNavigation {
+            suppressNextTapPlaybackNavigation = false
+            return
+        }
+
         if suppressNextClipNavigation {
             suppressNextClipNavigation = false
             return
@@ -460,9 +467,15 @@ struct ReaderView: View {
           }
 
           const rect = element.getBoundingClientRect();
-          const threshold = window.innerHeight * 0.8;
+          const threshold = window.innerHeight * 0.9;
           if (rect.bottom >= threshold) {
-            window.scrollBy({ top: window.innerHeight * 0.6, behavior: 'smooth' });
+            const targetTop = window.innerHeight * 0.15;
+            const delta = rect.top - targetTop;
+            if (Math.abs(delta) <= 2) {
+              return 'noop';
+            }
+
+            window.scrollBy({ top: delta, behavior: 'smooth' });
             return 'scrolled';
           }
 

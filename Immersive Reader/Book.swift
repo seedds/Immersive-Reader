@@ -24,6 +24,8 @@ final class Book {
     var mediaOverlayActiveClass: String?
     var mediaOverlayDuration: Double?
     var mediaOverlayClipCount: Int?
+    var sourceFileSize: Int64?
+    var sourceFileModifiedAt: Date?
     var importedAt: Date
     var lastOpenedAt: Date?
 
@@ -42,6 +44,8 @@ final class Book {
         mediaOverlayActiveClass: String? = nil,
         mediaOverlayDuration: Double? = nil,
         mediaOverlayClipCount: Int? = nil,
+        sourceFileSize: Int64? = nil,
+        sourceFileModifiedAt: Date? = nil,
         importedAt: Date = Date(),
         lastOpenedAt: Date? = nil
     ) {
@@ -59,6 +63,8 @@ final class Book {
         self.mediaOverlayActiveClass = mediaOverlayActiveClass
         self.mediaOverlayDuration = mediaOverlayDuration
         self.mediaOverlayClipCount = mediaOverlayClipCount
+        self.sourceFileSize = sourceFileSize
+        self.sourceFileModifiedAt = sourceFileModifiedAt
         self.importedAt = importedAt
         self.lastOpenedAt = lastOpenedAt
     }

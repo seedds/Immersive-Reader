@@ -19,19 +19,53 @@ enum BookImportError: LocalizedError {
     }
 }
 
-@MainActor
 enum BookImportService {
+    private struct SourceFileFingerprint: Sendable, Equatable {
+        let fileSize: Int64?
+        let modifiedAt: Date?
+    }
+
+    private struct ExistingBookSnapshot: Sendable {
+        let id: UUID
+        let originalFilename: String
+        let epubFilePath: String
+        let extractedDirectoryPath: String
+        let mediaOverlayJSONPath: String?
+        let sourceFileSize: Int64?
+        let sourceFileModifiedAt: Date?
+    }
+
+    private struct PreparedBookImport: Sendable {
+        let id: UUID
+        let filename: String
+        let epubFilePath: String
+        let extractedDirectoryPath: String
+        let metadata: EPUBMetadata
+        let mediaOverlayJSONPath: String?
+        let mediaOverlayActiveClass: String?
+        let mediaOverlayDuration: Double?
+        let mediaOverlayClipCount: Int?
+        let fingerprint: SourceFileFingerprint
+    }
+
+    private struct RefreshPreparation: Sendable {
+        let preparedImports: [PreparedBookImport]
+        let removedBookIDs: [UUID]
+    }
+
     enum ExistingBookStrategy {
         case skip
         case overwrite
     }
 
     @discardableResult
+    @MainActor
     static func importBooks(from urls: [URL], modelContext: ModelContext) throws -> [Book] {
         try importBooks(from: urls, modelContext: modelContext, existingBookStrategy: .skip)
     }
 
     @discardableResult
+    @MainActor
     static func importBooks(
         from urls: [URL],
         modelContext: ModelContext,
@@ -79,6 +113,8 @@ enum BookImportService {
                 throw error
             }
 
+            let fingerprint = try sourceFileFingerprint(for: destinationURL)
+
             let bookId = existingBook?.id ?? UUID()
             let extractionURL = try AppStorage.extractedDirectory().appendingPathComponent(bookId.uuidString, isDirectory: true)
 
@@ -117,6 +153,8 @@ enum BookImportService {
                 existingBook.mediaOverlayActiveClass = mediaOverlay?.manifest.activeClass
                 existingBook.mediaOverlayDuration = mediaOverlay?.manifest.duration
                 existingBook.mediaOverlayClipCount = mediaOverlay?.manifest.clipCount
+                existingBook.sourceFileSize = fingerprint.fileSize
+                existingBook.sourceFileModifiedAt = fingerprint.modifiedAt
                 existingBook.importedAt = Date()
                 book = existingBook
             } else {
@@ -133,7 +171,9 @@ enum BookImportService {
                     mediaOverlayJSONPath: mediaOverlay?.jsonURL.path,
                     mediaOverlayActiveClass: mediaOverlay?.manifest.activeClass,
                     mediaOverlayDuration: mediaOverlay?.manifest.duration,
-                    mediaOverlayClipCount: mediaOverlay?.manifest.clipCount
+                    mediaOverlayClipCount: mediaOverlay?.manifest.clipCount,
+                    sourceFileSize: fingerprint.fileSize,
+                    sourceFileModifiedAt: fingerprint.modifiedAt
                 )
                 modelContext.insert(newBook)
                 book = newBook
@@ -147,6 +187,7 @@ enum BookImportService {
     }
 
     @discardableResult
+    @MainActor
     static func reimportAllBooksFromDocuments(modelContext: ModelContext) throws -> [Book] {
         let libraryDirectory = try AppStorage.documentsDirectory()
         let epubURLs = try FileManager.default.contentsOfDirectory(
@@ -160,6 +201,99 @@ enum BookImportService {
         return try importBooks(from: epubURLs, modelContext: modelContext, existingBookStrategy: .overwrite)
     }
 
+    @MainActor
+    @discardableResult
+    static func refreshBooksFromDocuments(modelContext: ModelContext) async throws -> [Book] {
+        let libraryDirectory = try AppStorage.documentsDirectory()
+        let epubURLs = try FileManager.default.contentsOfDirectory(
+            at: libraryDirectory,
+            includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
+            options: [.skipsHiddenFiles]
+        )
+        .filter { $0.pathExtension.lowercased() == "epub" }
+        .sorted { $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending }
+
+        let existingBooks = try modelContext.fetch(FetchDescriptor<Book>())
+        let snapshots = existingBooks.map { book in
+            ExistingBookSnapshot(
+                id: book.id,
+                originalFilename: book.originalFilename,
+                epubFilePath: book.epubFilePath,
+                extractedDirectoryPath: book.extractedDirectoryPath,
+                mediaOverlayJSONPath: book.mediaOverlayJSONPath,
+                sourceFileSize: book.sourceFileSize,
+                sourceFileModifiedAt: book.sourceFileModifiedAt
+            )
+        }
+
+        let preparation = try await Task.detached(priority: .userInitiated) {
+            try prepareRefresh(from: epubURLs, existingBooks: snapshots)
+        }.value
+
+        let existingBooksByID = Dictionary(uniqueKeysWithValues: existingBooks.map { ($0.id, $0) })
+        let existingBooksByFilename = Dictionary(uniqueKeysWithValues: existingBooks.map { ($0.originalFilename, $0) })
+        let fileManager = FileManager.default
+
+        for bookID in preparation.removedBookIDs {
+            guard let book = existingBooksByID[bookID] else {
+                continue
+            }
+
+            try? fileManager.removeItem(atPath: book.epubFilePath)
+            try? fileManager.removeItem(atPath: book.extractedDirectoryPath)
+            modelContext.delete(book)
+        }
+
+        var refreshedBooks: [Book] = []
+        for preparedImport in preparation.preparedImports {
+            let book: Book
+            if let existingBook = existingBooksByFilename[preparedImport.filename] {
+                existingBook.title = preparedImport.metadata.title ?? displayTitle(for: preparedImport.filename)
+                existingBook.author = preparedImport.metadata.author ?? "Unknown Author"
+                existingBook.originalFilename = preparedImport.filename
+                existingBook.epubFilePath = preparedImport.epubFilePath
+                existingBook.extractedDirectoryPath = preparedImport.extractedDirectoryPath
+                existingBook.coverImagePath = preparedImport.metadata.coverImagePath
+                existingBook.language = preparedImport.metadata.language
+                existingBook.metadataIdentifier = preparedImport.metadata.identifier
+                existingBook.mediaOverlayJSONPath = preparedImport.mediaOverlayJSONPath
+                existingBook.mediaOverlayActiveClass = preparedImport.mediaOverlayActiveClass
+                existingBook.mediaOverlayDuration = preparedImport.mediaOverlayDuration
+                existingBook.mediaOverlayClipCount = preparedImport.mediaOverlayClipCount
+                existingBook.sourceFileSize = preparedImport.fingerprint.fileSize
+                existingBook.sourceFileModifiedAt = preparedImport.fingerprint.modifiedAt
+                existingBook.importedAt = Date()
+                book = existingBook
+            } else {
+                let newBook = Book(
+                    id: preparedImport.id,
+                    title: preparedImport.metadata.title ?? displayTitle(for: preparedImport.filename),
+                    author: preparedImport.metadata.author ?? "Unknown Author",
+                    originalFilename: preparedImport.filename,
+                    epubFilePath: preparedImport.epubFilePath,
+                    extractedDirectoryPath: preparedImport.extractedDirectoryPath,
+                    coverImagePath: preparedImport.metadata.coverImagePath,
+                    language: preparedImport.metadata.language,
+                    metadataIdentifier: preparedImport.metadata.identifier,
+                    mediaOverlayJSONPath: preparedImport.mediaOverlayJSONPath,
+                    mediaOverlayActiveClass: preparedImport.mediaOverlayActiveClass,
+                    mediaOverlayDuration: preparedImport.mediaOverlayDuration,
+                    mediaOverlayClipCount: preparedImport.mediaOverlayClipCount,
+                    sourceFileSize: preparedImport.fingerprint.fileSize,
+                    sourceFileModifiedAt: preparedImport.fingerprint.modifiedAt
+                )
+                modelContext.insert(newBook)
+                book = newBook
+            }
+
+            refreshedBooks.append(book)
+        }
+
+        try modelContext.save()
+        return refreshedBooks
+    }
+
+    @MainActor
     private static func existingBook(originalFilename: String, modelContext: ModelContext) throws -> Book? {
         var descriptor = FetchDescriptor<Book>(
             predicate: #Predicate { book in
@@ -168,6 +302,92 @@ enum BookImportService {
         )
         descriptor.fetchLimit = 1
         return try modelContext.fetch(descriptor).first
+    }
+
+    private static func prepareRefresh(from urls: [URL], existingBooks: [ExistingBookSnapshot]) throws -> RefreshPreparation {
+        let existingByFilename = Dictionary(uniqueKeysWithValues: existingBooks.map { ($0.originalFilename, $0) })
+        let filenamesOnDisk = Set(urls.map { AppStorage.sanitizedFilename($0.lastPathComponent) })
+        let removedBookIDs = existingBooks
+            .filter { !filenamesOnDisk.contains($0.originalFilename) }
+            .map(\.id)
+
+        var preparedImports: [PreparedBookImport] = []
+        preparedImports.reserveCapacity(urls.count)
+
+        for sourceURL in urls {
+            let filename = AppStorage.sanitizedFilename(sourceURL.lastPathComponent)
+            guard filename.lowercased().hasSuffix(".epub") else {
+                throw BookImportError.notEpub(filename)
+            }
+
+            let fingerprint = try sourceFileFingerprint(for: sourceURL)
+            if let existingBook = existingByFilename[filename],
+               shouldSkipRefresh(for: sourceURL, existingBook: existingBook, fingerprint: fingerprint) {
+                continue
+            }
+
+            let bookID = existingByFilename[filename]?.id ?? UUID()
+            let extractionURL = try AppStorage.extractedDirectory().appendingPathComponent(bookID.uuidString, isDirectory: true)
+            let fileManager = FileManager.default
+
+            try EPUBArchive.validateEPUB(at: sourceURL)
+            try? fileManager.removeItem(at: extractionURL)
+            do {
+                try EPUBArchive(url: sourceURL).extract(to: extractionURL)
+            } catch {
+                try? fileManager.removeItem(at: extractionURL)
+                throw error
+            }
+
+            let package = EPUBMetadataService.packageInfo(in: extractionURL)
+            let metadata = package.map { EPUBMetadataService.metadata(in: extractionURL, package: $0) } ?? EPUBMetadata()
+            let mediaOverlay = package.flatMap { try? EPUBMediaOverlayService.parseAndWrite(in: extractionURL, package: $0) }
+
+            preparedImports.append(PreparedBookImport(
+                id: bookID,
+                filename: filename,
+                epubFilePath: sourceURL.path,
+                extractedDirectoryPath: extractionURL.path,
+                metadata: metadata,
+                mediaOverlayJSONPath: mediaOverlay?.jsonURL.path,
+                mediaOverlayActiveClass: mediaOverlay?.manifest.activeClass,
+                mediaOverlayDuration: mediaOverlay?.manifest.duration,
+                mediaOverlayClipCount: mediaOverlay?.manifest.clipCount,
+                fingerprint: fingerprint
+            ))
+        }
+
+        return RefreshPreparation(preparedImports: preparedImports, removedBookIDs: removedBookIDs)
+    }
+
+    private static func shouldSkipRefresh(
+        for sourceURL: URL,
+        existingBook: ExistingBookSnapshot,
+        fingerprint: SourceFileFingerprint
+    ) -> Bool {
+        guard fingerprint.fileSize == existingBook.sourceFileSize,
+              fingerprint.modifiedAt == existingBook.sourceFileModifiedAt,
+              existingBook.epubFilePath == sourceURL.path,
+              FileManager.default.fileExists(atPath: existingBook.epubFilePath),
+              FileManager.default.fileExists(atPath: existingBook.extractedDirectoryPath)
+        else {
+            return false
+        }
+
+        if let mediaOverlayJSONPath = existingBook.mediaOverlayJSONPath {
+            return FileManager.default.fileExists(atPath: mediaOverlayJSONPath)
+        }
+
+        return true
+    }
+
+    private static func sourceFileFingerprint(for url: URL) throws -> SourceFileFingerprint {
+        let resourceValues = try url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        let fileSize = resourceValues.fileSize.map(Int64.init)
+        return SourceFileFingerprint(
+            fileSize: fileSize,
+            modifiedAt: resourceValues.contentModificationDate
+        )
     }
 
     private static func displayTitle(for filename: String) -> String {

@@ -147,12 +147,17 @@ private struct BooksView: View {
         }
 
         isRefreshing = true
-        do {
-            try BookImportService.reimportAllBooksFromDocuments(modelContext: modelContext)
-        } catch {
-            importError = error.localizedDescription
+        Task {
+            defer {
+                isRefreshing = false
+            }
+
+            do {
+                try await BookImportService.refreshBooksFromDocuments(modelContext: modelContext)
+            } catch {
+                importError = error.localizedDescription
+            }
         }
-        isRefreshing = false
     }
 
 }
