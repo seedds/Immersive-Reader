@@ -446,29 +446,15 @@ struct ReaderView: View {
         guard playback.state.isPlaying,
               let fragmentID,
               !fragmentID.isEmpty,
-              let currentClip = playback.currentClip,
-              let currentClipIndex = playback.currentClipIndex
+              let currentClip = playback.currentClip
         else {
             return
         }
 
-        let nextClipIndex = playback.clips.index(after: currentClipIndex)
-        guard playback.clips.indices.contains(nextClipIndex) else {
-            return
-        }
-
-        let nextClip = playback.clips[nextClipIndex]
-        guard normalizedResourceHref(for: nextClip.textResourceHref) == normalizedResourceHref(for: currentClip.textResourceHref),
-              let nextFragmentID = nextClip.fragmentID,
-              !nextFragmentID.isEmpty
-        else {
-            return
-        }
-
-        let nextFragmentIDLiteral = javaScriptStringLiteral(nextFragmentID)
+        let fragmentIDLiteral = javaScriptStringLiteral(fragmentID)
         let script = """
         (() => {
-          const element = document.getElementById(\(nextFragmentIDLiteral));
+          const element = document.getElementById(\(fragmentIDLiteral));
           if (!element) {
             return 'missing';
           }
@@ -476,7 +462,7 @@ struct ReaderView: View {
           const rect = element.getBoundingClientRect();
           const threshold = window.innerHeight * 0.8;
           if (rect.bottom >= threshold) {
-            window.scrollBy({ top: window.innerHeight * 0.5, behavior: 'smooth' });
+            window.scrollBy({ top: window.innerHeight * 0.6, behavior: 'smooth' });
             return 'scrolled';
           }
 
