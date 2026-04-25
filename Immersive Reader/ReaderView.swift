@@ -28,6 +28,7 @@ struct ReaderView: View {
     @State private var suppressNextClipNavigation = false
     @State private var suppressNextTapPlaybackNavigation = false
     @State private var programmaticPlaybackScrollState: ProgrammaticPlaybackScrollState?
+    @State private var suppressPlaybackRetargetUntilClipChange = false
     @State private var readingOrderResourceHrefs: [String] = []
 
     var body: some View {
@@ -73,10 +74,12 @@ struct ReaderView: View {
                                     }
                                 },
                                 previous: {
+                                    suppressPlaybackRetargetUntilClipChange = false
                                     playback.previousClip()
                                     handleCurrentClipChange(oldIndex: nil, newIndex: playback.currentClipIndex, navigator: navigator)
                                 },
                                 next: {
+                                    suppressPlaybackRetargetUntilClipChange = false
                                     playback.nextClip()
                                     handleCurrentClipChange(oldIndex: nil, newIndex: playback.currentClipIndex, navigator: navigator)
                                 }
@@ -240,7 +243,8 @@ struct ReaderView: View {
         scrollSettledPlaybackTask?.cancel()
 
         guard playback.state.isPlaying,
-              !isProgrammaticPlaybackScrollInFlight
+              !isProgrammaticPlaybackScrollInFlight,
+              !suppressPlaybackRetargetUntilClipChange
         else {
             return
         }
@@ -259,7 +263,12 @@ struct ReaderView: View {
     private func handleViewportDidChange(navigator: EPUBNavigatorViewController) async {
         if case .autoFollowInDocument = programmaticPlaybackScrollState?.kind,
            let visibleLocator = await navigator.firstVisibleElementLocator() {
-            maybeEndProgrammaticPlaybackScroll(with: normalizedReference(for: visibleLocator.href.string))
+            maybeEndProgrammaticPlaybackScroll(
+                with: EPUBReference(
+                    resourceHref: normalizedResourceHref(for: visibleLocator.href.string),
+                    fragmentID: visibleLocator.locations.fragments.first
+                )
+            )
         }
     }
 
@@ -297,12 +306,14 @@ struct ReaderView: View {
     private func retargetPlaybackToFirstVisibleClipIfNeeded(with navigator: EPUBNavigatorViewController) async {
         guard playback.state.isPlaying,
               !isProgrammaticPlaybackScrollInFlight,
+              !suppressPlaybackRetargetUntilClipChange,
               let currentClip = playback.currentClip,
               let visibleReference = await firstVisibleSpokenReferenceIfCurrentClipIsOffscreen(
                 currentClip: currentClip,
                 navigator: navigator
               ),
               let visibleClipIndex = exactClipIndex(for: visibleReference),
+              !matchesCurrentClip(visibleReference),
               visibleClipIndex != playback.currentClipIndex
         else {
             return
@@ -315,6 +326,8 @@ struct ReaderView: View {
 
     @MainActor
     private func selectChapter(_ item: ChapterListItem, navigator: EPUBNavigatorViewController) async {
+        suppressPlaybackRetargetUntilClipChange = false
+
         withAnimation(.easeInOut(duration: 0.2)) {
             isChapterDrawerPresented = false
         }
@@ -342,6 +355,8 @@ struct ReaderView: View {
 
     @MainActor
     private func startPlaybackFromVisibleOrForwardPosition(with navigator: EPUBNavigatorViewController) async {
+        suppressPlaybackRetargetUntilClipChange = false
+
         guard let target = await resolvedPlaybackStartTarget(with: navigator) else {
             return
         }
@@ -371,6 +386,7 @@ struct ReaderView: View {
             return
         }
 
+        suppressPlaybackRetargetUntilClipChange = false
         suppressNextTapPlaybackNavigation = true
         playback.selectClip(at: clipIndex, autoplay: true)
         applyCurrentClipDecoration(with: navigator)
@@ -472,6 +488,10 @@ struct ReaderView: View {
     private func handleCurrentClipChange(oldIndex: Int?, newIndex: Int?, navigator: EPUBNavigatorViewController) {
         applyCurrentClipDecoration(with: navigator)
 
+        if oldIndex != newIndex {
+            suppressPlaybackRetargetUntilClipChange = false
+        }
+
         if suppressNextTapPlaybackNavigation {
             suppressNextTapPlaybackNavigation = false
             return
@@ -558,11 +578,24 @@ struct ReaderView: View {
             }
 
             await MainActor.run {
-                if action != "scrolled" {
+                if action == "scrolled" {
+                    suppressPlaybackRetargetUntilClipChange = true
+                } else {
                     endProgrammaticPlaybackScroll()
                 }
             }
         }
+    }
+
+    private func matchesCurrentClip(_ reference: EPUBReference) -> Bool {
+        guard let currentClip = playback.currentClip else {
+            return false
+        }
+
+        return EPUBReference(
+            resourceHref: normalizedResourceHref(for: currentClip.textResourceHref),
+            fragmentID: currentClip.fragmentID
+        ) == reference
     }
 
     @MainActor
