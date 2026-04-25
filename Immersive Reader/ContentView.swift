@@ -57,7 +57,7 @@ private struct BooksView: View {
                     List {
                         ForEach(books) { book in
                             NavigationLink {
-                                ReaderPlaceholderView(book: book)
+                                ReaderView(book: book)
                             } label: {
                                 BookRow(book: book)
                             }
@@ -158,46 +158,6 @@ private struct BookRow: View {
             }
         }
         .padding(.vertical, 6)
-    }
-}
-
-private struct ReaderPlaceholderView: View {
-    @Environment(\.modelContext) private var modelContext
-    let book: Book
-
-    var body: some View {
-        VStack(spacing: 20) {
-            Image(systemName: "text.book.closed")
-                .font(.system(size: 56))
-                .foregroundStyle(.blue)
-
-            VStack(spacing: 8) {
-                Text(book.title)
-                    .font(.title2.bold())
-                    .multilineTextAlignment(.center)
-
-                Text(book.author)
-                    .foregroundStyle(.secondary)
-            }
-
-            Text("Reader integration is next. This book is imported and ready for EPUB extraction, Readium rendering, and media-overlay playback.")
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal)
-
-            Text(book.extractedDirectoryPath)
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-                .multilineTextAlignment(.center)
-                .textSelection(.enabled)
-        }
-        .padding()
-        .navigationTitle("Reader")
-        .navigationBarTitleDisplayMode(.inline)
-        .onAppear {
-            book.lastOpenedAt = Date()
-            try? modelContext.save()
-        }
     }
 }
 

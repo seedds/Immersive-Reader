@@ -6,6 +6,13 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		5FBAAC902F9D000100CDF69E /* ReadiumShared in Frameworks */ = {isa = PBXBuildFile; productRef = 5FBAAC8C2F9D000100CDF69E /* ReadiumShared */; };
+		5FBAAC912F9D000100CDF69E /* ReadiumStreamer in Frameworks */ = {isa = PBXBuildFile; productRef = 5FBAAC8D2F9D000100CDF69E /* ReadiumStreamer */; };
+		5FBAAC922F9D000100CDF69E /* ReadiumNavigator in Frameworks */ = {isa = PBXBuildFile; productRef = 5FBAAC8E2F9D000100CDF69E /* ReadiumNavigator */; };
+		5FBAAC932F9D000100CDF69E /* ReadiumAdapterGCDWebServer in Frameworks */ = {isa = PBXBuildFile; productRef = 5FBAAC8F2F9D000100CDF69E /* ReadiumAdapterGCDWebServer */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		5FBAAC772F9CB28400CDF69E /* Immersive Reader.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Immersive Reader.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -23,6 +30,10 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5FBAAC902F9D000100CDF69E /* ReadiumShared in Frameworks */,
+				5FBAAC912F9D000100CDF69E /* ReadiumStreamer in Frameworks */,
+				5FBAAC922F9D000100CDF69E /* ReadiumNavigator in Frameworks */,
+				5FBAAC932F9D000100CDF69E /* ReadiumAdapterGCDWebServer in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -65,6 +76,10 @@
 			);
 			name = "Immersive Reader";
 			packageProductDependencies = (
+				5FBAAC8C2F9D000100CDF69E /* ReadiumShared */,
+				5FBAAC8D2F9D000100CDF69E /* ReadiumStreamer */,
+				5FBAAC8E2F9D000100CDF69E /* ReadiumNavigator */,
+				5FBAAC8F2F9D000100CDF69E /* ReadiumAdapterGCDWebServer */,
 			);
 			productName = "Immersive Reader";
 			productReference = 5FBAAC772F9CB28400CDF69E /* Immersive Reader.app */;
@@ -94,6 +109,9 @@
 			);
 			mainGroup = 5FBAAC6E2F9CB28400CDF69E;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				5FBAAC8B2F9D000100CDF69E /* XCRemoteSwiftPackageReference "swift-toolkit" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 5FBAAC782F9CB28400CDF69E /* Products */;
 			projectDirPath = "";
@@ -343,6 +361,40 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		5FBAAC8B2F9D000100CDF69E /* XCRemoteSwiftPackageReference "swift-toolkit" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/readium/swift-toolkit.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 3.8.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		5FBAAC8C2F9D000100CDF69E /* ReadiumShared */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5FBAAC8B2F9D000100CDF69E /* XCRemoteSwiftPackageReference "swift-toolkit" */;
+			productName = ReadiumShared;
+		};
+		5FBAAC8D2F9D000100CDF69E /* ReadiumStreamer */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5FBAAC8B2F9D000100CDF69E /* XCRemoteSwiftPackageReference "swift-toolkit" */;
+			productName = ReadiumStreamer;
+		};
+		5FBAAC8E2F9D000100CDF69E /* ReadiumNavigator */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5FBAAC8B2F9D000100CDF69E /* XCRemoteSwiftPackageReference "swift-toolkit" */;
+			productName = ReadiumNavigator;
+		};
+		5FBAAC8F2F9D000100CDF69E /* ReadiumAdapterGCDWebServer */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5FBAAC8B2F9D000100CDF69E /* XCRemoteSwiftPackageReference "swift-toolkit" */;
+			productName = ReadiumAdapterGCDWebServer;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 5FBAAC6F2F9CB28400CDF69E /* Project object */;
 }
