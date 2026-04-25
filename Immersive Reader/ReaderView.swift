@@ -138,14 +138,10 @@ struct ReaderView: View {
 
     @MainActor
     private func applyCurrentClipDecoration(with navigator: EPUBNavigatorViewController) {
-        guard let decorableNavigator = navigator as? DecorableNavigator else {
-            return
-        }
-
         guard let clip = playback.currentClip,
               let href = RelativeURL(epubHREF: clip.textResourceHref)
         else {
-            decorableNavigator.apply(decorations: [], in: mediaOverlayDecorationGroup)
+            navigator.apply(decorations: [], in: mediaOverlayDecorationGroup)
             return
         }
 
@@ -157,7 +153,7 @@ struct ReaderView: View {
             )
         )
 
-        decorableNavigator.apply(
+        navigator.apply(
             decorations: [
                 Decoration(
                     id: "media-overlay-active",

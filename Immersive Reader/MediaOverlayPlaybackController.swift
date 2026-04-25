@@ -5,7 +5,7 @@
 //  Created by F2PGOD on 25/4/2026.
 //
 
-import AVFoundation
+@preconcurrency import AVFoundation
 import Combine
 import Foundation
 
@@ -156,9 +156,9 @@ final class MediaOverlayPlaybackController: ObservableObject {
 
         let player = AVPlayer(url: URL(fileURLWithPath: clip.audioPath))
         self.player = player
-        player.seek(to: CMTime(seconds: clip.clipBegin, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
-            Task { @MainActor in
-                guard let self else { return }
+        player.seek(to: CMTime(seconds: clip.clipBegin, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, clip, player] _ in
+            guard let self else { return }
+            DispatchQueue.main.async {
                 self.addObservers(for: clip)
                 player.play()
                 self.state = .playing
@@ -174,7 +174,9 @@ final class MediaOverlayPlaybackController: ObservableObject {
                 forTimes: [NSValue(time: CMTime(seconds: clipEnd, preferredTimescale: 600))],
                 queue: .main
             ) { [weak self] in
-                self?.nextClip()
+                Task { @MainActor [weak self] in
+                    self?.nextClip()
+                }
             }
         }
 
@@ -184,7 +186,9 @@ final class MediaOverlayPlaybackController: ObservableObject {
                 object: item,
                 queue: .main
             ) { [weak self] _ in
-                self?.nextClip()
+                Task { @MainActor [weak self] in
+                    self?.nextClip()
+                }
             }
         }
     }
