@@ -158,34 +158,30 @@ private struct BookRow: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            BookCoverView(book: book)
+            VStack(spacing: 6) {
+                BookCoverView(book: book)
+
+                if (book.mediaOverlayClipCount ?? 0) > 0 {
+                    Image(systemName: "waveform")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                        .accessibilityLabel("Read aloud ready")
+                }
+            }
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(book.title)
                     .font(.headline)
-                    .lineLimit(2)
+                    .lineLimit(1)
 
                 Text(book.author)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-
-                Text(book.originalFilename)
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-
-                Text("Imported \(book.importedAt.formatted(date: .abbreviated, time: .omitted))")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-
-                if let clipCount = book.mediaOverlayClipCount, clipCount > 0 {
-                    Label("Read-aloud ready - \(clipCount) clips", systemImage: "waveform")
-                        .font(.caption2)
-                        .foregroundStyle(.green)
-                }
             }
+
+            Spacer(minLength: 0)
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, 3)
     }
 }
 
@@ -208,7 +204,7 @@ private struct BookCoverView: View {
                     }
             }
         }
-        .frame(width: 52, height: 68)
+        .frame(width: 48, height: 62)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 10, style: .continuous)

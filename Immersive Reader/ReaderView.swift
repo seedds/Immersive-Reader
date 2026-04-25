@@ -227,7 +227,7 @@ struct ReaderView: View {
         }
 
         scrollSettledPlaybackTask = Task {
-            try? await Task.sleep(nanoseconds: 350_000_000)
+            try? await Task.sleep(nanoseconds: 200_000_000)
             guard !Task.isCancelled else {
                 return
             }
