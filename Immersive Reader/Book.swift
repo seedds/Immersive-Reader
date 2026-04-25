@@ -15,6 +15,7 @@ final class Book {
     var author: String
     var originalFilename: String
     var epubFilePath: String
+    var extractedDirectoryPath: String = ""
     var importedAt: Date
     var lastOpenedAt: Date?
 
@@ -24,6 +25,7 @@ final class Book {
         author: String = "Unknown Author",
         originalFilename: String,
         epubFilePath: String,
+        extractedDirectoryPath: String,
         importedAt: Date = Date(),
         lastOpenedAt: Date? = nil
     ) {
@@ -32,6 +34,7 @@ final class Book {
         self.author = author
         self.originalFilename = originalFilename
         self.epubFilePath = epubFilePath
+        self.extractedDirectoryPath = extractedDirectoryPath
         self.importedAt = importedAt
         self.lastOpenedAt = lastOpenedAt
     }

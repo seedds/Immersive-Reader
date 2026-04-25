@@ -52,10 +52,11 @@ final class UploadServerController: ObservableObject {
         server.onUploadFinished = { [weak self] fileURL, filename in
             Task { @MainActor in
                 do {
+                    defer { try? FileManager.default.removeItem(at: fileURL) }
                     try BookImportService.importBooks(from: [fileURL], modelContext: modelContext)
-                    try? FileManager.default.removeItem(at: fileURL)
                     self?.recentUploads.insert(UploadRecord(filename: filename, date: Date()), at: 0)
                 } catch {
+                    try? FileManager.default.removeItem(at: fileURL)
                     self?.status = .failed(error.localizedDescription)
                 }
             }

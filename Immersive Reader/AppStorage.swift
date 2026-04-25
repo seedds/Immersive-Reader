@@ -8,7 +8,7 @@
 import Foundation
 
 enum AppStorage {
-    nonisolated static func rootDirectory() throws -> URL {
+    nonisolated static func documentsDirectory() throws -> URL {
         let documentsDirectory = try FileManager.default.url(
             for: .documentDirectory,
             in: .userDomainMask,
@@ -18,16 +18,26 @@ enum AppStorage {
         return try ensureDirectory(documentsDirectory.appendingPathComponent("Immersive Reader", isDirectory: true))
     }
 
-    nonisolated static func epubsDirectory() throws -> URL {
-        try ensureDirectory(rootDirectory().appendingPathComponent("EPUBs", isDirectory: true))
+    nonisolated static func applicationSupportDirectory() throws -> URL {
+        let supportDirectory = try FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        return try ensureDirectory(supportDirectory.appendingPathComponent("Immersive Reader", isDirectory: true))
     }
 
     nonisolated static func uploadsDirectory() throws -> URL {
-        try ensureDirectory(rootDirectory().appendingPathComponent("Uploads", isDirectory: true))
+        try ensureDirectory(
+            FileManager.default.temporaryDirectory
+                .appendingPathComponent("Immersive Reader", isDirectory: true)
+                .appendingPathComponent("Uploads", isDirectory: true)
+        )
     }
 
     nonisolated static func extractedDirectory() throws -> URL {
-        try ensureDirectory(rootDirectory().appendingPathComponent("Extracted", isDirectory: true))
+        try ensureDirectory(applicationSupportDirectory().appendingPathComponent("Extracted", isDirectory: true))
     }
 
     nonisolated static func sanitizedFilename(_ filename: String) -> String {

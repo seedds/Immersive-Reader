@@ -24,7 +24,7 @@ enum BookImportService {
     @discardableResult
     static func importBooks(from urls: [URL], modelContext: ModelContext) throws -> [Book] {
         var importedBooks: [Book] = []
-        let libraryDirectory = try AppStorage.epubsDirectory()
+        let libraryDirectory = try AppStorage.documentsDirectory()
 
         for sourceURL in urls {
             let filename = AppStorage.sanitizedFilename(sourceURL.lastPathComponent)
@@ -46,10 +46,30 @@ enum BookImportService {
             let destinationURL = AppStorage.uniqueFileURL(named: filename, in: libraryDirectory)
             try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
 
+            do {
+                try EPUBArchive.validateEPUB(at: destinationURL)
+            } catch {
+                try? FileManager.default.removeItem(at: destinationURL)
+                throw error
+            }
+
+            let bookId = UUID()
+            let extractionURL = try AppStorage.extractedDirectory().appendingPathComponent(bookId.uuidString, isDirectory: true)
+
+            do {
+                try EPUBArchive(url: destinationURL).extract(to: extractionURL)
+            } catch {
+                try? FileManager.default.removeItem(at: destinationURL)
+                try? FileManager.default.removeItem(at: extractionURL)
+                throw error
+            }
+
             let book = Book(
+                id: bookId,
                 title: displayTitle(for: filename),
                 originalFilename: filename,
-                epubFilePath: destinationURL.path
+                epubFilePath: destinationURL.path,
+                extractedDirectoryPath: extractionURL.path
             )
             modelContext.insert(book)
             importedBooks.append(book)

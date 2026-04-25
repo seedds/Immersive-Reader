@@ -115,6 +115,7 @@ private struct BooksView: View {
         for index in offsets {
             let book = books[index]
             try? fileManager.removeItem(atPath: book.epubFilePath)
+            try? fileManager.removeItem(atPath: book.extractedDirectoryPath)
             modelContext.delete(book)
         }
 
@@ -183,6 +184,12 @@ private struct ReaderPlaceholderView: View {
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal)
+
+            Text(book.extractedDirectoryPath)
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+                .textSelection(.enabled)
         }
         .padding()
         .navigationTitle("Reader")
@@ -239,7 +246,7 @@ private struct UploadView: View {
                 }
 
                 Section("Storage") {
-                    Text("Uploaded EPUBs are imported into Documents/Immersive Reader/EPUBs/.")
+                    Text("Uploaded EPUBs are imported into Documents/Immersive Reader/.")
                     Text("Keep the app open while uploading. iOS may suspend local networking in the background.")
                         .foregroundStyle(.secondary)
                 }
