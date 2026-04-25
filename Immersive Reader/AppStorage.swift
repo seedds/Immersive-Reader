@@ -9,13 +9,12 @@ import Foundation
 
 enum AppStorage {
     nonisolated static func documentsDirectory() throws -> URL {
-        let documentsDirectory = try FileManager.default.url(
+        try FileManager.default.url(
             for: .documentDirectory,
             in: .userDomainMask,
             appropriateFor: nil,
             create: true
         )
-        return try ensureDirectory(documentsDirectory.appendingPathComponent("Immersive Reader", isDirectory: true))
     }
 
     nonisolated static func applicationSupportDirectory() throws -> URL {

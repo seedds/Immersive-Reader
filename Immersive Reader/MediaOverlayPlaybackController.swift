@@ -144,6 +144,25 @@ final class MediaOverlayPlaybackController: ObservableObject {
         }
     }
 
+    func selectClip(at index: Int, autoplay: Bool) {
+        guard clips.indices.contains(index) else {
+            return
+        }
+
+        player?.pause()
+        removeObservers()
+        player = nil
+        deactivateAudioSession()
+
+        currentClipIndex = index
+
+        if autoplay {
+            play()
+        } else {
+            state = .paused
+        }
+    }
+
     private func start(_ clip: EPUBMediaOverlayClip) {
         removeObservers()
 

@@ -78,9 +78,6 @@ enum EPUBMetadataService {
 
         let decoded = stripped.removingPercentEncoding ?? stripped
         let components = decoded.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
-        guard !components.contains("..") else {
-            return nil
-        }
 
         let url = components.reduce(baseURL) { partialURL, component in
             partialURL.appendingPathComponent(component)

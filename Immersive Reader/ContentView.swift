@@ -241,7 +241,7 @@ private struct UploadView: View {
                 }
 
                 Section("Storage") {
-                    Text("Uploaded EPUBs are imported into Documents/Immersive Reader/.")
+                    Text("Uploaded EPUBs are stored directly in the app's Documents folder and should appear in Files under On My iPhone/ImmersiveReader.")
                     Text("Keep the app open while uploading. iOS may suspend local networking in the background.")
                         .foregroundStyle(.secondary)
                 }
