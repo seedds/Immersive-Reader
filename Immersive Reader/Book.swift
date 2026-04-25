@@ -16,6 +16,10 @@ final class Book {
     var originalFilename: String
     var epubFilePath: String
     var extractedDirectoryPath: String = ""
+    var coverImagePath: String?
+    var language: String?
+    var metadataIdentifier: String?
+    var lastLocatorJSON: String?
     var importedAt: Date
     var lastOpenedAt: Date?
 
@@ -26,6 +30,10 @@ final class Book {
         originalFilename: String,
         epubFilePath: String,
         extractedDirectoryPath: String,
+        coverImagePath: String? = nil,
+        language: String? = nil,
+        metadataIdentifier: String? = nil,
+        lastLocatorJSON: String? = nil,
         importedAt: Date = Date(),
         lastOpenedAt: Date? = nil
     ) {
@@ -35,6 +43,10 @@ final class Book {
         self.originalFilename = originalFilename
         self.epubFilePath = epubFilePath
         self.extractedDirectoryPath = extractedDirectoryPath
+        self.coverImagePath = coverImagePath
+        self.language = language
+        self.metadataIdentifier = metadataIdentifier
+        self.lastLocatorJSON = lastLocatorJSON
         self.importedAt = importedAt
         self.lastOpenedAt = lastOpenedAt
     }

@@ -175,8 +175,11 @@ final class UploadServerController: ObservableObject {
             try fileManager.moveItem(at: sourceURL, to: destinationURL)
         }
 
+        let previousDisplayTitle = displayTitle(for: book.originalFilename)
         book.originalFilename = filename
-        book.title = displayTitle(for: filename)
+        if book.title == previousDisplayTitle {
+            book.title = displayTitle(for: filename)
+        }
         book.epubFilePath = destinationURL.path
         try modelContext.save()
     }

@@ -64,12 +64,18 @@ enum BookImportService {
                 throw error
             }
 
+            let metadata = EPUBMetadataService.metadata(in: extractionURL)
+
             let book = Book(
                 id: bookId,
-                title: displayTitle(for: filename),
+                title: metadata.title ?? displayTitle(for: filename),
+                author: metadata.author ?? "Unknown Author",
                 originalFilename: filename,
                 epubFilePath: destinationURL.path,
-                extractedDirectoryPath: extractionURL.path
+                extractedDirectoryPath: extractionURL.path,
+                coverImagePath: metadata.coverImagePath,
+                language: metadata.language,
+                metadataIdentifier: metadata.identifier
             )
             modelContext.insert(book)
             importedBooks.append(book)

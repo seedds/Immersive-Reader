@@ -7,6 +7,7 @@
 
 import SwiftData
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 struct ContentView: View {
@@ -129,14 +130,7 @@ private struct BookRow: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(.blue.gradient)
-                .frame(width: 52, height: 68)
-                .overlay {
-                    Image(systemName: "book.closed.fill")
-                        .font(.title2)
-                        .foregroundStyle(.white)
-                }
+            BookCoverView(book: book)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(book.title)
@@ -158,6 +152,41 @@ private struct BookRow: View {
             }
         }
         .padding(.vertical, 6)
+    }
+}
+
+private struct BookCoverView: View {
+    let book: Book
+
+    var body: some View {
+        Group {
+            if let image = coverImage {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(.blue.gradient)
+                    .overlay {
+                        Image(systemName: "book.closed.fill")
+                            .font(.title2)
+                            .foregroundStyle(.white)
+                    }
+            }
+        }
+        .frame(width: 52, height: 68)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(.black.opacity(0.08), lineWidth: 1)
+        }
+    }
+
+    private var coverImage: UIImage? {
+        guard let coverImagePath = book.coverImagePath else {
+            return nil
+        }
+        return UIImage(contentsOfFile: coverImagePath)
     }
 }
 
