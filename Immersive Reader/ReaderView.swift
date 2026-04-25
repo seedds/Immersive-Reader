@@ -182,6 +182,7 @@ struct ReaderView: View {
         EPUBPreferences(
             fontFamily: ReaderSettings.fontFamily(from: readerFontFamilyRawValue),
             fontSize: ReaderSettings.normalizedFontSize(readerFontSize),
+            publisherStyles: false,
             scroll: true
         )
     }
