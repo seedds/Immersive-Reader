@@ -20,6 +20,10 @@ final class Book {
     var language: String?
     var metadataIdentifier: String?
     var lastLocatorJSON: String?
+    var mediaOverlayJSONPath: String?
+    var mediaOverlayActiveClass: String?
+    var mediaOverlayDuration: Double?
+    var mediaOverlayClipCount: Int?
     var importedAt: Date
     var lastOpenedAt: Date?
 
@@ -34,6 +38,10 @@ final class Book {
         language: String? = nil,
         metadataIdentifier: String? = nil,
         lastLocatorJSON: String? = nil,
+        mediaOverlayJSONPath: String? = nil,
+        mediaOverlayActiveClass: String? = nil,
+        mediaOverlayDuration: Double? = nil,
+        mediaOverlayClipCount: Int? = nil,
         importedAt: Date = Date(),
         lastOpenedAt: Date? = nil
     ) {
@@ -47,6 +55,10 @@ final class Book {
         self.language = language
         self.metadataIdentifier = metadataIdentifier
         self.lastLocatorJSON = lastLocatorJSON
+        self.mediaOverlayJSONPath = mediaOverlayJSONPath
+        self.mediaOverlayActiveClass = mediaOverlayActiveClass
+        self.mediaOverlayDuration = mediaOverlayDuration
+        self.mediaOverlayClipCount = mediaOverlayClipCount
         self.importedAt = importedAt
         self.lastOpenedAt = lastOpenedAt
     }

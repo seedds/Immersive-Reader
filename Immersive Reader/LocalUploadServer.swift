@@ -610,7 +610,7 @@ private final class HTTPUploadConnection {
                 <article class="book" data-id="${escapeHTML(book.id)}" data-filename="${escapeHTML(book.filename)}">
                   <div>
                     <div class="title">${escapeHTML(book.title)}</div>
-                    <div class="meta">${escapeHTML(book.filename)} &middot; ${formatBytes(book.fileSize)}</div>
+                    <div class="meta">${escapeHTML(book.filename)} &middot; ${formatBytes(book.fileSize)}${book.hasMediaOverlay ? ` &middot; Read-aloud ready (${book.mediaOverlayClipCount} clips)` : ''}</div>
                   </div>
                   <div class="actions">
                     <button class="secondary" data-action="rename">Rename</button>

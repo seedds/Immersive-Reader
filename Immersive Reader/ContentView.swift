@@ -149,6 +149,12 @@ private struct BookRow: View {
                 Text("Imported \(book.importedAt.formatted(date: .abbreviated, time: .omitted))")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+
+                if let clipCount = book.mediaOverlayClipCount, clipCount > 0 {
+                    Label("Read-aloud ready - \(clipCount) clips", systemImage: "waveform")
+                        .font(.caption2)
+                        .foregroundStyle(.green)
+                }
             }
         }
         .padding(.vertical, 6)

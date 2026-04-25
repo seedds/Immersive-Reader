@@ -15,20 +15,40 @@ struct EPUBMetadata {
     var coverImagePath: String?
 }
 
+struct EPUBPackageInfo {
+    struct ManifestItem {
+        let id: String
+        let href: String
+        let mediaType: String?
+        let mediaOverlay: String?
+        let properties: Set<String>
+    }
+
+    var packageURL: URL
+    var title: String?
+    var creator: String?
+    var language: String?
+    var identifier: String?
+    var coverItemId: String?
+    var mediaActiveClass: String?
+    var mediaPlaybackActiveClass: String?
+    var mediaDuration: Double?
+    var mediaNarrator: String?
+    var manifestItems: [ManifestItem] = []
+}
+
 enum EPUBMetadataService {
     static func metadata(in extractedDirectory: URL) -> EPUBMetadata {
-        guard let packageURL = packageDocumentURL(in: extractedDirectory) else {
+        guard let package = packageInfo(in: extractedDirectory) else {
             return EPUBMetadata()
         }
 
-        let parser = OPFParser()
-        guard let package = parser.parse(url: packageURL) else {
-            return EPUBMetadata()
-        }
+        return metadata(in: extractedDirectory, package: package)
+    }
 
+    static func metadata(in extractedDirectory: URL, package: EPUBPackageInfo) -> EPUBMetadata {
         let coverPath = coverImagePath(
             in: package,
-            packageURL: packageURL,
             extractedDirectory: extractedDirectory
         )
 
@@ -41,35 +61,16 @@ enum EPUBMetadataService {
         )
     }
 
-    private static func packageDocumentURL(in extractedDirectory: URL) -> URL? {
-        let containerURL = extractedDirectory
-            .appendingPathComponent("META-INF", isDirectory: true)
-            .appendingPathComponent("container.xml", isDirectory: false)
-
-        let parser = ContainerParser()
-        guard let fullPath = parser.parse(url: containerURL) else {
+    static func packageInfo(in extractedDirectory: URL) -> EPUBPackageInfo? {
+        guard let packageURL = packageDocumentURL(in: extractedDirectory) else {
             return nil
         }
 
-        return resolvedURL(for: fullPath, relativeTo: extractedDirectory, root: extractedDirectory)
+        let parser = OPFParser(packageURL: packageURL)
+        return parser.parse(url: packageURL)
     }
 
-    private static func coverImagePath(in package: OPFPackage, packageURL: URL, extractedDirectory: URL) -> String? {
-        let coverItem = package.manifestItems.first { item in
-            item.properties.contains("cover-image")
-        } ?? package.manifestItems.first { item in
-            package.coverItemId != nil && item.id == package.coverItemId
-        }
-
-        guard let href = coverItem?.href else {
-            return nil
-        }
-
-        let packageDirectory = packageURL.deletingLastPathComponent()
-        return resolvedURL(for: href, relativeTo: packageDirectory, root: extractedDirectory)?.path
-    }
-
-    private static func resolvedURL(for href: String, relativeTo baseURL: URL, root: URL) -> URL? {
+    static func resolvedURL(for href: String, relativeTo baseURL: URL, root: URL) -> URL? {
         let stripped = href.components(separatedBy: "#").first?.components(separatedBy: "?").first ?? href
         guard !stripped.isEmpty, !stripped.hasPrefix("/"), !stripped.hasPrefix("~") else {
             return nil
@@ -91,25 +92,38 @@ enum EPUBMetadataService {
         return url
     }
 
+    private static func packageDocumentURL(in extractedDirectory: URL) -> URL? {
+        let containerURL = extractedDirectory
+            .appendingPathComponent("META-INF", isDirectory: true)
+            .appendingPathComponent("container.xml", isDirectory: false)
+
+        let parser = ContainerParser()
+        guard let fullPath = parser.parse(url: containerURL) else {
+            return nil
+        }
+
+        return resolvedURL(for: fullPath, relativeTo: extractedDirectory, root: extractedDirectory)
+    }
+
+    private static func coverImagePath(in package: EPUBPackageInfo, extractedDirectory: URL) -> String? {
+        let coverItem = package.manifestItems.first { item in
+            item.properties.contains("cover-image")
+        } ?? package.manifestItems.first { item in
+            package.coverItemId != nil && item.id == package.coverItemId
+        }
+
+        guard let href = coverItem?.href else {
+            return nil
+        }
+
+        let packageDirectory = package.packageURL.deletingLastPathComponent()
+        return resolvedURL(for: href, relativeTo: packageDirectory, root: extractedDirectory)?.path
+    }
+
     private static func clean(_ value: String?) -> String? {
         let cleaned = value?.trimmingCharacters(in: .whitespacesAndNewlines)
         return cleaned?.isEmpty == false ? cleaned : nil
     }
-}
-
-private struct OPFPackage {
-    struct ManifestItem {
-        let id: String
-        let href: String
-        let properties: Set<String>
-    }
-
-    var title: String?
-    var creator: String?
-    var language: String?
-    var identifier: String?
-    var coverItemId: String?
-    var manifestItems: [ManifestItem] = []
 }
 
 private final class ContainerParser: NSObject, XMLParserDelegate {
@@ -133,11 +147,15 @@ private final class ContainerParser: NSObject, XMLParserDelegate {
 }
 
 private final class OPFParser: NSObject, XMLParserDelegate {
-    private var package = OPFPackage()
+    private var package: EPUBPackageInfo
     private var currentMetadataElement: String?
     private var currentText = ""
 
-    func parse(url: URL) -> OPFPackage? {
+    init(packageURL: URL) {
+        package = EPUBPackageInfo(packageURL: packageURL)
+    }
+
+    func parse(url: URL) -> EPUBPackageInfo? {
         guard let parser = XMLParser(contentsOf: url) else {
             return nil
         }
@@ -158,13 +176,32 @@ private final class OPFParser: NSObject, XMLParserDelegate {
             if attributeDict["name"] == "cover", let content = attributeDict["content"] {
                 package.coverItemId = content
             }
+            if attributeDict["property"] == "media:active-class" {
+                currentMetadataElement = "media:active-class"
+                currentText = ""
+            } else if attributeDict["property"] == "media:playback-active-class" {
+                currentMetadataElement = "media:playback-active-class"
+                currentText = ""
+            } else if attributeDict["property"] == "media:duration" {
+                currentMetadataElement = "media:duration"
+                currentText = ""
+            } else if attributeDict["property"] == "media:narrator" {
+                currentMetadataElement = "media:narrator"
+                currentText = ""
+            }
 
         case "item":
             guard let id = attributeDict["id"], let href = attributeDict["href"] else {
                 return
             }
             let properties = Set((attributeDict["properties"] ?? "").split(separator: " ").map(String.init))
-            package.manifestItems.append(OPFPackage.ManifestItem(id: id, href: href, properties: properties))
+            package.manifestItems.append(EPUBPackageInfo.ManifestItem(
+                id: id,
+                href: href,
+                mediaType: attributeDict["media-type"],
+                mediaOverlay: attributeDict["media-overlay"],
+                properties: properties
+            ))
 
         default:
             break
@@ -179,7 +216,8 @@ private final class OPFParser: NSObject, XMLParserDelegate {
     }
 
     func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
-        guard currentMetadataElement == localName(elementName) else {
+        let name = localName(elementName)
+        guard currentMetadataElement == name || (name == "meta" && currentMetadataElement?.hasPrefix("media:") == true) else {
             return
         }
 
@@ -194,6 +232,14 @@ private final class OPFParser: NSObject, XMLParserDelegate {
                 package.language = text
             case "identifier" where package.identifier == nil:
                 package.identifier = text
+            case "media:active-class":
+                package.mediaActiveClass = text
+            case "media:playback-active-class":
+                package.mediaPlaybackActiveClass = text
+            case "media:duration":
+                package.mediaDuration = EPUBMediaOverlayTimeParser.seconds(from: text)
+            case "media:narrator":
+                package.mediaNarrator = text
             default:
                 break
             }

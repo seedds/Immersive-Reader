@@ -64,7 +64,14 @@ enum BookImportService {
                 throw error
             }
 
-            let metadata = EPUBMetadataService.metadata(in: extractionURL)
+            let package = EPUBMetadataService.packageInfo(in: extractionURL)
+            let metadata = package.map { EPUBMetadataService.metadata(in: extractionURL, package: $0) } ?? EPUBMetadata()
+            let mediaOverlay: EPUBMediaOverlayParseResult?
+            if let package {
+                mediaOverlay = try? EPUBMediaOverlayService.parseAndWrite(in: extractionURL, package: package)
+            } else {
+                mediaOverlay = nil
+            }
 
             let book = Book(
                 id: bookId,
@@ -75,7 +82,11 @@ enum BookImportService {
                 extractedDirectoryPath: extractionURL.path,
                 coverImagePath: metadata.coverImagePath,
                 language: metadata.language,
-                metadataIdentifier: metadata.identifier
+                metadataIdentifier: metadata.identifier,
+                mediaOverlayJSONPath: mediaOverlay?.jsonURL.path,
+                mediaOverlayActiveClass: mediaOverlay?.manifest.activeClass,
+                mediaOverlayDuration: mediaOverlay?.manifest.duration,
+                mediaOverlayClipCount: mediaOverlay?.manifest.clipCount
             )
             modelContext.insert(book)
             importedBooks.append(book)

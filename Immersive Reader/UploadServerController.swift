@@ -149,6 +149,8 @@ final class UploadServerController: ObservableObject {
                 "filename": book.originalFilename,
                 "importedAt": dateFormatter.string(from: book.importedAt),
                 "fileSize": fileSize,
+                "hasMediaOverlay": (book.mediaOverlayClipCount ?? 0) > 0,
+                "mediaOverlayClipCount": book.mediaOverlayClipCount ?? 0,
             ]
         }
 
