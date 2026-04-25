@@ -10,6 +10,8 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
+    @StateObject private var uploadServer = UploadServerController()
+
     var body: some View {
         TabView {
             BooksView()
@@ -17,7 +19,7 @@ struct ContentView: View {
                     Label("Books", systemImage: "books.vertical")
                 }
 
-            UploadPlaceholderView()
+            UploadView(controller: uploadServer)
                 .tabItem {
                     Label("Upload", systemImage: "network")
                 }
@@ -101,41 +103,10 @@ private struct BooksView: View {
     private func handleImport(_ result: Result<[URL], Error>) {
         do {
             let urls = try result.get()
-            try importBooks(from: urls)
+            try BookImportService.importBooks(from: urls, modelContext: modelContext)
         } catch {
             importError = error.localizedDescription
         }
-    }
-
-    private func importBooks(from urls: [URL]) throws {
-        let fileManager = FileManager.default
-        let libraryDirectory = try epubLibraryDirectory()
-
-        for sourceURL in urls {
-            let filename = sourceURL.lastPathComponent
-            guard !books.contains(where: { $0.originalFilename == filename }) else {
-                continue
-            }
-
-            let hasAccess = sourceURL.startAccessingSecurityScopedResource()
-            defer {
-                if hasAccess {
-                    sourceURL.stopAccessingSecurityScopedResource()
-                }
-            }
-
-            let destinationURL = libraryDirectory.appendingPathComponent("\(UUID().uuidString)-\(filename)")
-            try fileManager.copyItem(at: sourceURL, to: destinationURL)
-
-            let book = Book(
-                title: displayTitle(for: sourceURL),
-                originalFilename: filename,
-                epubFilePath: destinationURL.path
-            )
-            modelContext.insert(book)
-        }
-
-        try modelContext.save()
     }
 
     private func deleteBooks(at offsets: IndexSet) {
@@ -150,26 +121,6 @@ private struct BooksView: View {
         try? modelContext.save()
     }
 
-    private func epubLibraryDirectory() throws -> URL {
-        let documentsDirectory = try FileManager.default.url(
-            for: .documentDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
-        let libraryDirectory = documentsDirectory.appendingPathComponent("EPUBs", isDirectory: true)
-        try FileManager.default.createDirectory(
-            at: libraryDirectory,
-            withIntermediateDirectories: true
-        )
-        return libraryDirectory
-    }
-
-    private func displayTitle(for url: URL) -> String {
-        url.deletingPathExtension()
-            .lastPathComponent
-            .replacingOccurrences(of: "_", with: " ")
-    }
 }
 
 private struct BookRow: View {
@@ -243,14 +194,72 @@ private struct ReaderPlaceholderView: View {
     }
 }
 
-private struct UploadPlaceholderView: View {
+private struct UploadView: View {
+    @Environment(\.modelContext) private var modelContext
+    @ObservedObject var controller: UploadServerController
+
     var body: some View {
         NavigationStack {
-            ContentUnavailableView(
-                "Upload Server Later",
-                systemImage: "network",
-                description: Text("The local HTTP EPUB upload server will be added after the Books tab and reader pipeline are stable.")
-            )
+            List {
+                Section("Server") {
+                    LabeledContent("Status", value: controller.status.title)
+
+                    if let serverURL = controller.serverURL {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Open this address on another computer on the same Wi-Fi network:")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                            Text(serverURL.absoluteString)
+                                .font(.system(.body, design: .monospaced))
+                                .textSelection(.enabled)
+                        }
+                    } else if case .running = controller.status {
+                        Text("Server is running, but no Wi-Fi IP address was found. Make sure this device is connected to the same network as the computer uploading the EPUB.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Button {
+                        switch controller.status {
+                        case .running:
+                            controller.stop()
+                        case .stopped, .failed:
+                            controller.start(modelContext: modelContext)
+                        }
+                    } label: {
+                        Text(controller.status == .running ? "Stop Server" : "Start Server")
+                    }
+                }
+
+                if case .failed(let message) = controller.status {
+                    Section("Error") {
+                        Text(message)
+                            .foregroundStyle(.red)
+                    }
+                }
+
+                Section("Storage") {
+                    Text("Uploaded EPUBs are imported into Documents/Immersive Reader/EPUBs/.")
+                    Text("Keep the app open while uploading. iOS may suspend local networking in the background.")
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("Recent Uploads") {
+                    if controller.recentUploads.isEmpty {
+                        Text("No uploads yet")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(controller.recentUploads) { upload in
+                            VStack(alignment: .leading) {
+                                Text(upload.filename)
+                                Text(upload.date.formatted(date: .abbreviated, time: .shortened))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
             .navigationTitle("Upload")
         }
     }
