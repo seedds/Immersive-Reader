@@ -644,6 +644,10 @@ struct ReaderView: View {
             return nil
         }
 
+        if await isFragmentPartiallyVisible(currentFragmentID, navigator: navigator) {
+            return nil
+        }
+
         let currentReference = EPUBReference(
             resourceHref: normalizedResourceHref(for: currentClip.textResourceHref),
             fragmentID: currentFragmentID
@@ -672,6 +676,38 @@ struct ReaderView: View {
         }
 
         return EPUBReference(resourceHref: visibleResourceHref, fragmentID: visibleFragmentID)
+    }
+
+    @MainActor
+    private func isFragmentPartiallyVisible(_ fragmentID: String, navigator: EPUBNavigatorViewController) async -> Bool {
+        let fragmentIDLiteral = javaScriptStringLiteral(fragmentID)
+        let script = """
+        (() => {
+          const element = document.getElementById(
+            \(fragmentIDLiteral)
+          );
+          if (!element) {
+            return false;
+          }
+
+          const style = window.getComputedStyle(element);
+          if (style.display === 'none' || style.visibility === 'hidden') {
+            return false;
+          }
+
+          const rect = element.getBoundingClientRect();
+          return rect.bottom > 0 && rect.top < window.innerHeight;
+        })();
+        """
+
+        let result = await navigator.evaluateJavaScript(script)
+        guard case .success(let value) = result,
+              let isVisible = value as? Bool
+        else {
+            return false
+        }
+
+        return isVisible
     }
 
     private func playableFragmentIDs(for resourceHref: String) -> [String] {
