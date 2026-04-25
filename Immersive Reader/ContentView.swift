@@ -25,7 +25,7 @@ struct ContentView: View {
                     Label("Upload", systemImage: "network")
                 }
 
-            SettingsPlaceholderView()
+            SettingsView()
                 .tabItem {
                     Label("Settings", systemImage: "gearshape")
                 }
@@ -38,6 +38,7 @@ private struct BooksView: View {
     @Query(sort: \Book.importedAt, order: .reverse) private var books: [Book]
 
     @State private var isImporting = false
+    @State private var isRefreshing = false
     @State private var importError: String?
 
     var body: some View {
@@ -67,8 +68,21 @@ private struct BooksView: View {
                     }
                 }
             }
-            .navigationTitle("Books")
             .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        refreshBooks()
+                    } label: {
+                        if isRefreshing {
+                            ProgressView()
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                    }
+                    .disabled(isRefreshing)
+                    .accessibilityLabel("Refresh Books")
+                }
+
                 ToolbarItem(placement: .primaryAction) {
                     Button {
                         isImporting = true
@@ -121,6 +135,20 @@ private struct BooksView: View {
         }
 
         try? modelContext.save()
+    }
+
+    private func refreshBooks() {
+        guard !isRefreshing else {
+            return
+        }
+
+        isRefreshing = true
+        do {
+            try BookImportService.reimportAllBooksFromDocuments(modelContext: modelContext)
+        } catch {
+            importError = error.localizedDescription
+        }
+        isRefreshing = false
     }
 
 }
@@ -267,16 +295,52 @@ private struct UploadView: View {
     }
 }
 
-private struct SettingsPlaceholderView: View {
+private struct SettingsView: View {
+    @SwiftUI.AppStorage(ReaderSettings.fontSizeKey) private var fontSize = ReaderSettings.defaultFontSize
+    @SwiftUI.AppStorage(ReaderSettings.fontFamilyKey) private var fontFamilyRawValue = ""
+
     var body: some View {
         NavigationStack {
-            ContentUnavailableView(
-                "Settings Later",
-                systemImage: "gearshape",
-                description: Text("Reader typography, theme, playback, and server settings will be added in a later pass.")
-            )
-            .navigationTitle("Settings")
+            Form {
+                Section("Reader") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Text("Font Size")
+                            Spacer()
+                            Text(fontSize.formatted(.number.precision(.fractionLength(1))))
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Slider(
+                            value: Binding(
+                                get: { ReaderSettings.normalizedFontSize(fontSize) },
+                                set: { fontSize = ReaderSettings.normalizedFontSize($0) }
+                            ),
+                            in: ReaderSettings.fontSizeRange,
+                            step: ReaderSettings.fontSizeStep
+                        )
+                    }
+
+                    Picker("Font Family", selection: $fontFamilyRawValue) {
+                        ForEach(ReaderSettings.fontFamilyOptions) { option in
+                            Text(option.name).tag(option.id)
+                        }
+                    }
+                }
+
+                Section("Preview") {
+                    Text("The quick brown fox jumps over the lazy dog.")
+                        .font(.system(size: 17 * ReaderSettings.normalizedFontSize(fontSize)))
+                    Text(selectedFontFamilyName)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
+    }
+
+    private var selectedFontFamilyName: String {
+        ReaderSettings.fontFamilyOptions.first(where: { $0.id == fontFamilyRawValue })?.name ?? "Default"
     }
 }
 

@@ -70,7 +70,11 @@ final class UploadServerController: ObservableObject {
             Task { @MainActor in
                 do {
                     defer { try? FileManager.default.removeItem(at: fileURL) }
-                    try BookImportService.importBooks(from: [fileURL], modelContext: modelContext)
+                    try BookImportService.importBooks(
+                        from: [fileURL],
+                        modelContext: modelContext,
+                        existingBookStrategy: .overwrite
+                    )
                     self?.recentUploads.insert(UploadRecord(filename: filename, date: Date()), at: 0)
                 } catch {
                     try? FileManager.default.removeItem(at: fileURL)

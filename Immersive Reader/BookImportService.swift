@@ -21,10 +21,25 @@ enum BookImportError: LocalizedError {
 
 @MainActor
 enum BookImportService {
+    enum ExistingBookStrategy {
+        case skip
+        case overwrite
+    }
+
     @discardableResult
     static func importBooks(from urls: [URL], modelContext: ModelContext) throws -> [Book] {
+        try importBooks(from: urls, modelContext: modelContext, existingBookStrategy: .skip)
+    }
+
+    @discardableResult
+    static func importBooks(
+        from urls: [URL],
+        modelContext: ModelContext,
+        existingBookStrategy: ExistingBookStrategy
+    ) throws -> [Book] {
         var importedBooks: [Book] = []
         let libraryDirectory = try AppStorage.documentsDirectory()
+        let fileManager = FileManager.default
 
         for sourceURL in urls {
             let filename = AppStorage.sanitizedFilename(sourceURL.lastPathComponent)
@@ -32,7 +47,8 @@ enum BookImportService {
                 throw BookImportError.notEpub(filename)
             }
 
-            if try bookExists(originalFilename: filename, modelContext: modelContext) {
+            let existingBook = try existingBook(originalFilename: filename, modelContext: modelContext)
+            if existingBook != nil, existingBookStrategy == .skip {
                 continue
             }
 
@@ -43,24 +59,38 @@ enum BookImportService {
                 }
             }
 
-            let destinationURL = AppStorage.uniqueFileURL(named: filename, in: libraryDirectory)
-            try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+            let destinationURL = libraryDirectory.appendingPathComponent(filename, isDirectory: false)
+            let sourcePath = sourceURL.standardizedFileURL.path
+            let destinationPath = destinationURL.standardizedFileURL.path
+
+            if sourcePath != destinationPath {
+                if fileManager.fileExists(atPath: destinationURL.path) {
+                    try fileManager.removeItem(at: destinationURL)
+                }
+                try fileManager.copyItem(at: sourceURL, to: destinationURL)
+            }
 
             do {
                 try EPUBArchive.validateEPUB(at: destinationURL)
             } catch {
-                try? FileManager.default.removeItem(at: destinationURL)
+                if sourcePath != destinationPath {
+                    try? fileManager.removeItem(at: destinationURL)
+                }
                 throw error
             }
 
-            let bookId = UUID()
+            let bookId = existingBook?.id ?? UUID()
             let extractionURL = try AppStorage.extractedDirectory().appendingPathComponent(bookId.uuidString, isDirectory: true)
+
+            try? fileManager.removeItem(at: extractionURL)
 
             do {
                 try EPUBArchive(url: destinationURL).extract(to: extractionURL)
             } catch {
-                try? FileManager.default.removeItem(at: destinationURL)
-                try? FileManager.default.removeItem(at: extractionURL)
+                if sourcePath != destinationPath {
+                    try? fileManager.removeItem(at: destinationURL)
+                }
+                try? fileManager.removeItem(at: extractionURL)
                 throw error
             }
 
@@ -73,22 +103,42 @@ enum BookImportService {
                 mediaOverlay = nil
             }
 
-            let book = Book(
-                id: bookId,
-                title: metadata.title ?? displayTitle(for: filename),
-                author: metadata.author ?? "Unknown Author",
-                originalFilename: filename,
-                epubFilePath: destinationURL.path,
-                extractedDirectoryPath: extractionURL.path,
-                coverImagePath: metadata.coverImagePath,
-                language: metadata.language,
-                metadataIdentifier: metadata.identifier,
-                mediaOverlayJSONPath: mediaOverlay?.jsonURL.path,
-                mediaOverlayActiveClass: mediaOverlay?.manifest.activeClass,
-                mediaOverlayDuration: mediaOverlay?.manifest.duration,
-                mediaOverlayClipCount: mediaOverlay?.manifest.clipCount
-            )
-            modelContext.insert(book)
+            let book: Book
+            if let existingBook {
+                existingBook.title = metadata.title ?? displayTitle(for: filename)
+                existingBook.author = metadata.author ?? "Unknown Author"
+                existingBook.originalFilename = filename
+                existingBook.epubFilePath = destinationURL.path
+                existingBook.extractedDirectoryPath = extractionURL.path
+                existingBook.coverImagePath = metadata.coverImagePath
+                existingBook.language = metadata.language
+                existingBook.metadataIdentifier = metadata.identifier
+                existingBook.mediaOverlayJSONPath = mediaOverlay?.jsonURL.path
+                existingBook.mediaOverlayActiveClass = mediaOverlay?.manifest.activeClass
+                existingBook.mediaOverlayDuration = mediaOverlay?.manifest.duration
+                existingBook.mediaOverlayClipCount = mediaOverlay?.manifest.clipCount
+                existingBook.importedAt = Date()
+                book = existingBook
+            } else {
+                let newBook = Book(
+                    id: bookId,
+                    title: metadata.title ?? displayTitle(for: filename),
+                    author: metadata.author ?? "Unknown Author",
+                    originalFilename: filename,
+                    epubFilePath: destinationURL.path,
+                    extractedDirectoryPath: extractionURL.path,
+                    coverImagePath: metadata.coverImagePath,
+                    language: metadata.language,
+                    metadataIdentifier: metadata.identifier,
+                    mediaOverlayJSONPath: mediaOverlay?.jsonURL.path,
+                    mediaOverlayActiveClass: mediaOverlay?.manifest.activeClass,
+                    mediaOverlayDuration: mediaOverlay?.manifest.duration,
+                    mediaOverlayClipCount: mediaOverlay?.manifest.clipCount
+                )
+                modelContext.insert(newBook)
+                book = newBook
+            }
+
             importedBooks.append(book)
         }
 
@@ -96,14 +146,28 @@ enum BookImportService {
         return importedBooks
     }
 
-    private static func bookExists(originalFilename: String, modelContext: ModelContext) throws -> Bool {
+    @discardableResult
+    static func reimportAllBooksFromDocuments(modelContext: ModelContext) throws -> [Book] {
+        let libraryDirectory = try AppStorage.documentsDirectory()
+        let epubURLs = try FileManager.default.contentsOfDirectory(
+            at: libraryDirectory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )
+        .filter { $0.pathExtension.lowercased() == "epub" }
+        .sorted { $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending }
+
+        return try importBooks(from: epubURLs, modelContext: modelContext, existingBookStrategy: .overwrite)
+    }
+
+    private static func existingBook(originalFilename: String, modelContext: ModelContext) throws -> Book? {
         var descriptor = FetchDescriptor<Book>(
             predicate: #Predicate { book in
                 book.originalFilename == originalFilename
             }
         )
         descriptor.fetchLimit = 1
-        return try !modelContext.fetch(descriptor).isEmpty
+        return try modelContext.fetch(descriptor).first
     }
 
     private static func displayTitle(for filename: String) -> String {

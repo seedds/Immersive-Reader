@@ -14,6 +14,8 @@ import WebKit
 
 struct ReaderView: View {
     @Environment(\.modelContext) private var modelContext
+    @SwiftUI.AppStorage(ReaderSettings.fontSizeKey) private var readerFontSize = ReaderSettings.defaultFontSize
+    @SwiftUI.AppStorage(ReaderSettings.fontFamilyKey) private var readerFontFamilyRawValue = ""
     @StateObject private var playback = MediaOverlayPlaybackController()
 
     let book: Book
@@ -103,6 +105,12 @@ struct ReaderView: View {
                 .onChange(of: playback.currentClipIndex) { oldIndex, newIndex in
                     handleCurrentClipChange(oldIndex: oldIndex, newIndex: newIndex, navigator: navigator)
                 }
+                .onChange(of: readerFontSize) { _, _ in
+                    applyReaderPreferences(to: navigator)
+                }
+                .onChange(of: readerFontFamilyRawValue) { _, _ in
+                    applyReaderPreferences(to: navigator)
+                }
 
             case .failed(let message):
                 ContentUnavailableView(
@@ -152,21 +160,35 @@ struct ReaderView: View {
             let publication = try await ReadiumBookService.shared.openPublication(for: book)
             let initialLocation = savedLocation()
             let chapterItems = await loadChapterItems(from: publication)
+            let preferences = readerPreferences()
             let navigator = try EPUBNavigatorViewController(
                 publication: publication,
                 initialLocation: initialLocation,
                 config: .init(
-                    preferences: EPUBPreferences(scroll: true),
+                    preferences: preferences,
                     defaults: EPUBDefaults(scroll: true, spread: .never),
                     disablePageTurnsWhileScrolling: true
                 )
             )
-            navigator.submitPreferences(EPUBPreferences(scroll: true))
+            navigator.submitPreferences(preferences)
             self.chapterItems = chapterItems
             state = .ready(publication: publication, navigator: navigator)
         } catch {
             state = .failed(error.localizedDescription)
         }
+    }
+
+    private func readerPreferences() -> EPUBPreferences {
+        EPUBPreferences(
+            fontFamily: ReaderSettings.fontFamily(from: readerFontFamilyRawValue),
+            fontSize: ReaderSettings.normalizedFontSize(readerFontSize),
+            scroll: true
+        )
+    }
+
+    @MainActor
+    private func applyReaderPreferences(to navigator: EPUBNavigatorViewController) {
+        navigator.submitPreferences(readerPreferences())
     }
 
     private func loadChapterItems(from publication: Publication) async -> [ChapterListItem] {
@@ -238,7 +260,7 @@ struct ReaderView: View {
     private func retargetPlaybackToFirstVisibleClipIfNeeded(with navigator: EPUBNavigatorViewController) async {
         guard playback.state.isPlaying,
               let currentClip = playback.currentClip,
-              let visibleReference = await firstVisibleClipReferenceIfCurrentClipIsOffscreen(
+              let visibleReference = await firstVisibleSpokenReferenceIfCurrentClipIsOffscreen(
                 currentClip: currentClip,
                 navigator: navigator
               ),
@@ -248,6 +270,7 @@ struct ReaderView: View {
             return
         }
 
+        print("[ReaderMatch] scroll-match clipIndex=\(visibleClipIndex) clip=\(playback.clips[visibleClipIndex].textResourceHref)")
         suppressNextClipNavigation = true
         playback.selectClip(at: visibleClipIndex, autoplay: true)
         applyCurrentClipDecoration(with: navigator)
@@ -276,10 +299,14 @@ struct ReaderView: View {
 
     @MainActor
     private func playFromTappedReference(_ reference: EPUBReference, navigator: EPUBNavigatorViewController) async {
+        logMatchingDiagnostics(context: "tap-attempt", reference: reference)
+
         guard let clipIndex = exactClipIndex(for: reference) else {
+            logResourceCandidates(context: "tap-no-match", resourceHref: reference.resourceHref)
             return
         }
 
+        print("[ReaderMatch] tap-match clipIndex=\(clipIndex) clip=\(playback.clips[clipIndex].textResourceHref)")
         playback.selectClip(at: clipIndex, autoplay: true)
         navigateToCurrentClip(with: navigator)
         applyCurrentClipDecoration(with: navigator)
@@ -289,6 +316,7 @@ struct ReaderView: View {
         guard let fragmentID = reference.fragmentID,
               !fragmentID.isEmpty
         else {
+            print("[ReaderMatch] exactClipIndex missing-fragment resource=\(reference.resourceHref)")
             return nil
         }
 
@@ -297,9 +325,12 @@ struct ReaderView: View {
             fragmentID: fragmentID
         )
 
-        return playback.clips.firstIndex(where: { clip in
-            normalizedReference(for: clip.textResourceHref) == exactReference
+        let match = playback.clips.firstIndex(where: { clip in
+            normalizedResourceHref(for: clip.textResourceHref) == exactReference.resourceHref &&
+            clip.fragmentID == exactReference.fragmentID
         })
+        print("[ReaderMatch] exactClipIndex reference=\(exactReference.resourceHref)#\(fragmentID) matched=\(match.map(String.init) ?? "nil")")
+        return match
     }
 
     private func firstClipIndex(for link: ReadiumShared.Link) -> Int? {
@@ -317,6 +348,12 @@ struct ReaderView: View {
 
         return playback.clips.firstIndex(where: { clip in
             normalizedResourceHref(for: clip.textResourceHref) == chapterReference.resourceHref
+        })
+    }
+
+    private func firstClipIndex(forResourceHref resourceHref: String) -> Int? {
+        playback.clips.firstIndex(where: { clip in
+            normalizedResourceHref(for: clip.textResourceHref) == resourceHref
         })
     }
 
@@ -414,73 +451,149 @@ struct ReaderView: View {
     }
 
     @MainActor
-    private func firstVisibleClipReferenceIfCurrentClipIsOffscreen(
+    private func firstVisibleSpokenReferenceIfCurrentClipIsOffscreen(
         currentClip: EPUBMediaOverlayClip,
         navigator: EPUBNavigatorViewController
     ) async -> EPUBReference? {
-        let currentFragmentIDLiteral = javaScriptStringLiteral(currentClip.fragmentID ?? "")
+        guard let currentFragmentID = currentClip.fragmentID,
+              !currentFragmentID.isEmpty,
+              let visibleLocator = await navigator.firstVisibleElementLocator()
+        else {
+            print("[ReaderMatch] scroll-visible-locator unavailable currentClip=\(currentClip.textResourceHref)")
+            return nil
+        }
+
+        let currentReference = EPUBReference(
+            resourceHref: normalizedResourceHref(for: currentClip.textResourceHref),
+            fragmentID: currentFragmentID
+        )
+        let visibleReference = EPUBReference(
+            resourceHref: normalizedResourceHref(for: visibleLocator.href.string),
+            fragmentID: visibleLocator.locations.fragments.first
+        )
+        let visibleFragments = visibleLocator.locations.fragments
+        print("[ReaderMatch] scroll-visible-locator href=\(visibleLocator.href.string) fragments=\(visibleFragments) current=\(currentReference.resourceHref)#\(currentReference.fragmentID ?? "")")
+
+        if currentReference == visibleReference {
+            print("[ReaderMatch] scroll-visible-locator current clip still visible")
+            return nil
+        }
+
+        let visibleResourceHref = visibleReference.resourceHref
+        let playableFragmentIDs = playableFragmentIDs(for: visibleResourceHref)
+        guard !playableFragmentIDs.isEmpty
+        else {
+            print("[ReaderMatch] scroll-visible-locator no playable clips resource=\(visibleResourceHref)")
+            logResourceCandidates(context: "scroll-no-fragment", resourceHref: visibleResourceHref)
+            return nil
+        }
+
+        guard let visibleFragmentID = await firstPlayableFragmentIDInViewport(
+            fragmentIDs: playableFragmentIDs,
+            navigator: navigator
+        ) else {
+            print("[ReaderMatch] scroll-visible-locator no playable fragment in viewport resource=\(visibleResourceHref)")
+            logResourceCandidates(context: "scroll-no-playable-dom-match", resourceHref: visibleResourceHref)
+            return nil
+        }
+
+        let reference = EPUBReference(resourceHref: visibleResourceHref, fragmentID: visibleFragmentID)
+        logMatchingDiagnostics(context: "scroll-attempt", reference: reference)
+        return reference
+    }
+
+    private func playableFragmentIDs(for resourceHref: String) -> [String] {
+        var fragmentIDs: [String] = []
+        var seen = Set<String>()
+
+        for clip in playback.clips {
+            guard normalizedResourceHref(for: clip.textResourceHref) == resourceHref,
+                  let fragmentID = clip.fragmentID,
+                  !fragmentID.isEmpty,
+                  seen.insert(fragmentID).inserted
+            else {
+                continue
+            }
+
+            fragmentIDs.append(fragmentID)
+        }
+
+        return fragmentIDs
+    }
+
+    @MainActor
+    private func firstPlayableFragmentIDInViewport(
+        fragmentIDs: [String],
+        navigator: EPUBNavigatorViewController
+    ) async -> String? {
+        let fragmentIDsLiteral = javaScriptArrayLiteral(fragmentIDs)
         let script = """
         (() => {
-          const href = window.location.pathname.replace(/^\\//, '');
-          if (!href) {
-            return null;
-          }
+          const fragmentIDs = \(fragmentIDsLiteral);
 
-          const isVisible = element => {
+          const topInsideViewport = element => {
             if (!element) {
-              return false;
+              return null;
             }
 
             const style = window.getComputedStyle(element);
             if (style.display === 'none' || style.visibility === 'hidden') {
-              return false;
+              return null;
             }
 
             const rect = element.getBoundingClientRect();
-            return rect.bottom > 0 && rect.top < window.innerHeight;
+            return rect.top >= 0 && rect.top <= window.innerHeight ? rect.top : null;
           };
 
-          const currentFragmentID = \(currentFragmentIDLiteral);
-          if (currentFragmentID) {
-            const currentElement = document.getElementById(currentFragmentID);
-            if (isVisible(currentElement)) {
-              return { currentVisible: true, href, fragmentID: currentFragmentID };
-            }
-          }
-
-          var firstVisible = null;
-          for (const element of document.querySelectorAll('[id]')) {
-            if (!isVisible(element)) {
+          let firstVisible = null;
+          for (const fragmentID of fragmentIDs) {
+            const element = document.getElementById(fragmentID);
+            const top = topInsideViewport(element);
+            if (top === null) {
               continue;
             }
 
-            const rect = element.getBoundingClientRect();
-            if (!firstVisible || rect.top < firstVisible.top) {
-              firstVisible = { top: rect.top, fragmentID: element.id };
+            if (!firstVisible || top < firstVisible.top) {
+              firstVisible = { top, fragmentID };
             }
           }
 
-          if (!firstVisible?.fragmentID) {
-            return { currentVisible: false, href, fragmentID: null };
-          }
-
-          return { currentVisible: false, href, fragmentID: firstVisible.fragmentID };
+          return firstVisible?.fragmentID ?? null;
         })();
         """
 
-        let evaluationResult = await navigator.evaluateJavaScript(script)
-        guard case .success(let value) = evaluationResult,
-              let result = value as? [String: Any],
-              let currentVisible = result["currentVisible"] as? Bool,
-              currentVisible == false,
-              let href = result["href"] as? String,
-              let fragmentID = result["fragmentID"] as? String,
+        let result = await navigator.evaluateJavaScript(script)
+        guard case .success(let value) = result,
+              let fragmentID = value as? String,
               !fragmentID.isEmpty
         else {
             return nil
         }
 
-        return EPUBReference(resourceHref: href, fragmentID: fragmentID)
+        return fragmentID
+    }
+
+    private func logMatchingDiagnostics(context: String, reference: EPUBReference) {
+        let fragment = reference.fragmentID ?? "nil"
+        print("[ReaderMatch] \(context) reference=\(reference.resourceHref)#\(fragment)")
+        logResourceCandidates(context: context, resourceHref: reference.resourceHref)
+    }
+
+    private func logResourceCandidates(context: String, resourceHref: String) {
+        let resourceCandidates = playback.clips
+            .filter { normalizedResourceHref(for: $0.textResourceHref) == resourceHref }
+            .prefix(10)
+
+        if resourceCandidates.isEmpty {
+            print("[ReaderMatch] \(context) resource=\(resourceHref) candidates=[]")
+            return
+        }
+
+        let summary = resourceCandidates.map { clip in
+            let resourceHref = normalizedResourceHref(for: clip.textResourceHref)
+            return "\(resourceHref)#\(clip.fragmentID ?? "nil")"
+        }.joined(separator: ", ")
+        print("[ReaderMatch] \(context) resource=\(resourceHref) candidates=[\(summary)]")
     }
 
     @MainActor
@@ -522,6 +635,10 @@ private func javaScriptStringLiteral(_ value: String) -> String {
         .replacingOccurrences(of: "\n", with: "\\n")
         .replacingOccurrences(of: "\r", with: "\\r")
     return "\"\(escaped)\""
+}
+
+private func javaScriptArrayLiteral(_ values: [String]) -> String {
+    "[\(values.map(javaScriptStringLiteral).joined(separator: ", "))]"
 }
 
 private enum ReaderState {
@@ -704,9 +821,9 @@ private struct EPUBNavigatorHost: UIViewControllerRepresentable {
         private var panRecognizer: UIPanGestureRecognizer?
         private var currentViewport: EPUBNavigatorViewController.Viewport?
         private var lastBoundaryNavigationDate: Date?
-        private let boundaryPullThreshold: CGFloat = 44
-        private let boundaryProgressThreshold = 0.995
-        private let boundaryCooldown: TimeInterval = 0.5
+        private let boundaryPullThreshold: CGFloat = 200
+        private let boundaryProgressThreshold = 0.9997
+        private let boundaryCooldown: TimeInterval = 1.0
         private let audioTapMessageName = "mediaOverlayAudioTap"
 
         init(
