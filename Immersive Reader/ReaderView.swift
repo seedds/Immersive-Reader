@@ -13,6 +13,7 @@ import UIKit
 
 struct ReaderView: View {
     @Environment(\.modelContext) private var modelContext
+    @StateObject private var playback = MediaOverlayPlaybackController()
 
     let book: Book
 
@@ -26,10 +27,33 @@ struct ReaderView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             case .ready(_, let navigator):
-                EPUBNavigatorHost(navigator: navigator) { locator in
-                    saveLocation(locator)
-                }
+                VStack(spacing: 0) {
+                    EPUBNavigatorHost(navigator: navigator) { locator in
+                        saveLocation(locator)
+                    }
                     .ignoresSafeArea(edges: .bottom)
+
+                    if !playback.clips.isEmpty {
+                        MediaOverlayPlaybackBar(
+                            playback: playback,
+                            playPause: {
+                                playback.togglePlayback()
+                                navigateToCurrentClip(with: navigator)
+                            },
+                            previous: {
+                                playback.previousClip()
+                                navigateToCurrentClip(with: navigator)
+                            },
+                            next: {
+                                playback.nextClip()
+                                navigateToCurrentClip(with: navigator)
+                            }
+                        )
+                    }
+                }
+                .onChange(of: playback.currentClipIndex) { _, _ in
+                    navigateToCurrentClip(with: navigator)
+                }
 
             case .failed(let message):
                 ContentUnavailableView(
@@ -54,6 +78,7 @@ struct ReaderView: View {
 
         book.lastOpenedAt = Date()
         try? modelContext.save()
+        playback.load(from: book.mediaOverlayJSONPath)
 
         do {
             let publication = try await ReadiumBookService.shared.openPublication(for: book)
@@ -82,12 +107,82 @@ struct ReaderView: View {
         book.lastOpenedAt = Date()
         try? modelContext.save()
     }
+
+    @MainActor
+    private func navigateToCurrentClip(with navigator: EPUBNavigatorViewController) {
+        guard let clip = playback.currentClip,
+              let href = RelativeURL(epubHREF: clip.textResourceHref)
+        else {
+            return
+        }
+
+        let locator = Locator(
+            href: href,
+            mediaType: .xhtml,
+            locations: Locator.Locations(
+                fragments: clip.fragmentID.map { [$0] } ?? []
+            )
+        )
+
+        Task {
+            await navigator.go(to: locator, options: .animated)
+        }
+    }
 }
 
 private enum ReaderState {
     case loading
     case ready(publication: Publication, navigator: EPUBNavigatorViewController)
     case failed(String)
+}
+
+private struct MediaOverlayPlaybackBar: View {
+    @ObservedObject var playback: MediaOverlayPlaybackController
+    let playPause: () -> Void
+    let previous: () -> Void
+    let next: () -> Void
+
+    var body: some View {
+        HStack(spacing: 18) {
+            Button(action: previous) {
+                Image(systemName: "backward.fill")
+            }
+            .disabled(playback.currentClipIndex == nil || playback.currentClipIndex == 0)
+
+            Button(action: playPause) {
+                Image(systemName: playback.state.isPlaying ? "pause.fill" : "play.fill")
+                    .frame(width: 36, height: 36)
+                    .background(.blue, in: Circle())
+                    .foregroundStyle(.white)
+            }
+            .buttonStyle(.plain)
+
+            Button(action: next) {
+                Image(systemName: "forward.fill")
+            }
+            .disabled(!canGoForward)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Read Aloud")
+                    .font(.caption.bold())
+                Text(playback.currentClipNumberText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.regularMaterial)
+    }
+
+    private var canGoForward: Bool {
+        guard let currentClipIndex = playback.currentClipIndex else {
+            return false
+        }
+        return currentClipIndex < playback.clips.count - 1
+    }
 }
 
 private struct EPUBNavigatorHost: UIViewControllerRepresentable {
