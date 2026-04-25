@@ -29,6 +29,7 @@ final class MediaOverlayPlaybackController: ObservableObject {
     @Published private(set) var currentClipIndex: Int?
 
     private var player: AVPlayer?
+    private var loadedAudioPath: String?
     private var boundaryObserver: Any?
     private var endObserver: NSObjectProtocol?
 
@@ -109,6 +110,7 @@ final class MediaOverlayPlaybackController: ObservableObject {
         player?.pause()
         removeObservers()
         player = nil
+        loadedAudioPath = nil
         deactivateAudioSession()
         currentClipIndex = clips.isEmpty ? nil : currentClipIndex
         state = clips.isEmpty ? .unavailable : .ready
@@ -151,7 +153,6 @@ final class MediaOverlayPlaybackController: ObservableObject {
 
         player?.pause()
         removeObservers()
-        player = nil
         deactivateAudioSession()
 
         currentClipIndex = index
@@ -173,16 +174,49 @@ final class MediaOverlayPlaybackController: ObservableObject {
             return
         }
 
-        let player = AVPlayer(url: URL(fileURLWithPath: clip.audioPath))
-        self.player = player
+        let player = preparedPlayer(for: clip)
         player.seek(to: CMTime(seconds: clip.clipBegin, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, clip, player] _ in
             guard let self else { return }
             DispatchQueue.main.async {
+                guard self.isCurrentClip(clip) else { return }
                 self.addObservers(for: clip)
                 player.play()
                 self.state = .playing
             }
         }
+    }
+
+    private func preparedPlayer(for clip: EPUBMediaOverlayClip) -> AVPlayer {
+        if let player,
+           loadedAudioPath == clip.audioPath,
+           player.currentItem != nil {
+            return player
+        }
+
+        let item = AVPlayerItem(url: URL(fileURLWithPath: clip.audioPath))
+
+        if let player {
+            player.replaceCurrentItem(with: item)
+            loadedAudioPath = clip.audioPath
+            return player
+        }
+
+        let player = AVPlayer(playerItem: item)
+        self.player = player
+        loadedAudioPath = clip.audioPath
+        return player
+    }
+
+    private func isCurrentClip(_ clip: EPUBMediaOverlayClip) -> Bool {
+        guard let currentClip else {
+            return false
+        }
+
+        return currentClip.audioPath == clip.audioPath &&
+            currentClip.textResourceHref == clip.textResourceHref &&
+            currentClip.fragmentID == clip.fragmentID &&
+            currentClip.clipBegin == clip.clipBegin &&
+            currentClip.clipEnd == clip.clipEnd
     }
 
     private func addObservers(for clip: EPUBMediaOverlayClip) {
