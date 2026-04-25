@@ -40,6 +40,7 @@ private struct BooksView: View {
     @State private var isImporting = false
     @State private var isRefreshing = false
     @State private var importError: String?
+    @State private var selectedBook: Book?
 
     var body: some View {
         NavigationStack {
@@ -58,11 +59,11 @@ private struct BooksView: View {
                 } else {
                     List {
                         ForEach(books) { book in
-                            NavigationLink {
-                                ReaderView(book: book)
-                            } label: {
-                                BookRow(book: book)
-                            }
+                            BookRow(book: book)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    selectedBook = book
+                                }
                         }
                         .onDelete(perform: deleteBooks)
                     }
@@ -112,6 +113,9 @@ private struct BooksView: View {
             } message: {
                 Text(importError ?? "Unknown error")
             }
+            .navigationDestination(item: $selectedBook) { book in
+                ReaderView(book: book)
+            }
         }
     }
 
@@ -158,30 +162,29 @@ private struct BookRow: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            VStack(spacing: 6) {
-                BookCoverView(book: book)
+            BookCoverView(book: book)
 
-                if (book.mediaOverlayClipCount ?? 0) > 0 {
-                    Image(systemName: "waveform")
-                        .font(.caption)
-                        .foregroundStyle(.green)
-                        .accessibilityLabel("Read aloud ready")
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(book.title)
                     .font(.headline)
                     .lineLimit(1)
 
                 Text(book.author)
-                    .font(.subheadline)
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
 
             Spacer(minLength: 0)
+
+            if (book.mediaOverlayClipCount ?? 0) > 0 {
+                Image(systemName: "waveform")
+                    .font(.subheadline)
+                    .foregroundStyle(.green)
+                    .accessibilityLabel("Read aloud ready")
+            }
         }
-        .padding(.vertical, 3)
+        .padding(.vertical, 2)
     }
 }
 
@@ -204,7 +207,7 @@ private struct BookCoverView: View {
                     }
             }
         }
-        .frame(width: 48, height: 62)
+        .frame(width: 44, height: 56)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
