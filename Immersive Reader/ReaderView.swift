@@ -22,6 +22,8 @@ struct ReaderView: View {
     @State private var chapterItems: [ChapterListItem] = []
     @State private var isChapterDrawerPresented = false
     @State private var currentLocationReference: EPUBReference?
+    @State private var scrollSettledPlaybackTask: Task<Void, Never>?
+    @State private var suppressNextClipNavigation = false
 
     var body: some View {
         Group {
@@ -36,8 +38,10 @@ struct ReaderView: View {
                         EPUBNavigatorHost(
                             navigator: navigator,
                             onLocationDidChange: { locator in
-                                currentLocationReference = normalizedReference(for: locator.href.string)
-                                saveLocation(locator)
+                                handleLocationDidChange(locator, navigator: navigator)
+                            },
+                            onViewportDidChange: {
+                                scheduleScrollSettledPlaybackSync(with: navigator)
                             },
                             onAudioTap: { reference in
                                 Task {
@@ -129,6 +133,7 @@ struct ReaderView: View {
             await openBook()
         }
         .onDisappear {
+            scrollSettledPlaybackTask?.cancel()
             playback.stop()
         }
     }
@@ -184,6 +189,31 @@ struct ReaderView: View {
     }
 
     @MainActor
+    private func handleLocationDidChange(_ locator: Locator, navigator: EPUBNavigatorViewController) {
+        currentLocationReference = normalizedReference(for: locator.href.string)
+        saveLocation(locator)
+        scheduleScrollSettledPlaybackSync(with: navigator)
+    }
+
+    @MainActor
+    private func scheduleScrollSettledPlaybackSync(with navigator: EPUBNavigatorViewController) {
+        scrollSettledPlaybackTask?.cancel()
+
+        guard playback.state.isPlaying else {
+            return
+        }
+
+        scrollSettledPlaybackTask = Task {
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled else {
+                return
+            }
+
+            await retargetPlaybackToFirstVisibleClipIfNeeded(with: navigator)
+        }
+    }
+
+    @MainActor
     private func navigateToCurrentClip(with navigator: EPUBNavigatorViewController) {
         guard let clip = playback.currentClip,
               let href = RelativeURL(epubHREF: clip.textResourceHref)
@@ -202,6 +232,25 @@ struct ReaderView: View {
         Task {
             await navigator.go(to: locator, options: .animated)
         }
+    }
+
+    @MainActor
+    private func retargetPlaybackToFirstVisibleClipIfNeeded(with navigator: EPUBNavigatorViewController) async {
+        guard playback.state.isPlaying,
+              let currentClip = playback.currentClip,
+              let visibleReference = await firstVisibleClipReferenceIfCurrentClipIsOffscreen(
+                currentClip: currentClip,
+                navigator: navigator
+              ),
+              let visibleClipIndex = exactClipIndex(for: visibleReference),
+              visibleClipIndex != playback.currentClipIndex
+        else {
+            return
+        }
+
+        suppressNextClipNavigation = true
+        playback.selectClip(at: visibleClipIndex, autoplay: true)
+        applyCurrentClipDecoration(with: navigator)
     }
 
     @MainActor
@@ -305,6 +354,11 @@ struct ReaderView: View {
     private func handleCurrentClipChange(oldIndex: Int?, newIndex: Int?, navigator: EPUBNavigatorViewController) {
         applyCurrentClipDecoration(with: navigator)
 
+        if suppressNextClipNavigation {
+            suppressNextClipNavigation = false
+            return
+        }
+
         guard let newIndex,
               playback.clips.indices.contains(newIndex)
         else {
@@ -357,6 +411,76 @@ struct ReaderView: View {
         Task {
             _ = await navigator.evaluateJavaScript(script)
         }
+    }
+
+    @MainActor
+    private func firstVisibleClipReferenceIfCurrentClipIsOffscreen(
+        currentClip: EPUBMediaOverlayClip,
+        navigator: EPUBNavigatorViewController
+    ) async -> EPUBReference? {
+        let currentFragmentIDLiteral = javaScriptStringLiteral(currentClip.fragmentID ?? "")
+        let script = """
+        (() => {
+          const href = window.location.pathname.replace(/^\\//, '');
+          if (!href) {
+            return null;
+          }
+
+          const isVisible = element => {
+            if (!element) {
+              return false;
+            }
+
+            const style = window.getComputedStyle(element);
+            if (style.display === 'none' || style.visibility === 'hidden') {
+              return false;
+            }
+
+            const rect = element.getBoundingClientRect();
+            return rect.bottom > 0 && rect.top < window.innerHeight;
+          };
+
+          const currentFragmentID = \(currentFragmentIDLiteral);
+          if (currentFragmentID) {
+            const currentElement = document.getElementById(currentFragmentID);
+            if (isVisible(currentElement)) {
+              return { currentVisible: true, href, fragmentID: currentFragmentID };
+            }
+          }
+
+          var firstVisible = null;
+          for (const element of document.querySelectorAll('[id]')) {
+            if (!isVisible(element)) {
+              continue;
+            }
+
+            const rect = element.getBoundingClientRect();
+            if (!firstVisible || rect.top < firstVisible.top) {
+              firstVisible = { top: rect.top, fragmentID: element.id };
+            }
+          }
+
+          if (!firstVisible?.fragmentID) {
+            return { currentVisible: false, href, fragmentID: null };
+          }
+
+          return { currentVisible: false, href, fragmentID: firstVisible.fragmentID };
+        })();
+        """
+
+        let evaluationResult = await navigator.evaluateJavaScript(script)
+        guard case .success(let value) = evaluationResult,
+              let result = value as? [String: Any],
+              let currentVisible = result["currentVisible"] as? Bool,
+              currentVisible == false,
+              let href = result["href"] as? String,
+              let fragmentID = result["fragmentID"] as? String,
+              !fragmentID.isEmpty
+        else {
+            return nil
+        }
+
+        return EPUBReference(resourceHref: href, fragmentID: fragmentID)
     }
 
     @MainActor
@@ -431,60 +555,63 @@ private struct ChapterDrawer: View {
     let onClose: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Chapters")
-                    .font(.headline)
-                Spacer()
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                        .foregroundStyle(.secondary)
+        GeometryReader { proxy in
+            VStack(alignment: .leading, spacing: 0) {
+                HStack {
+                    Text("Chapters")
+                        .font(.headline)
+                    Spacer()
+                    Button(action: onClose) {
+                        Image(systemName: "xmark")
+                            .foregroundStyle(.secondary)
+                    }
                 }
-            }
-            .padding()
+                .padding()
 
-            Divider()
+                Divider()
 
-            if items.isEmpty {
-                ContentUnavailableView(
-                    "No Chapters",
-                    systemImage: "list.bullet.rectangle",
-                    description: Text("This book doesn't expose a table of contents.")
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(items) { item in
-                            Button {
-                                onSelect(item)
-                            } label: {
-                                Text(item.title)
-                                    .fontWeight(selectedItemID == item.id ? .semibold : .regular)
-                                    .foregroundStyle(selectedItemID == item.id ? .blue : .primary)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.vertical, 12)
-                                    .padding(.leading, 16 + CGFloat(item.level * 18))
-                                    .padding(.trailing, 16)
-                                    .background(
-                                        selectedItemID == item.id
-                                            ? Color.blue.opacity(0.1)
-                                            : Color.clear
-                                    )
+                if items.isEmpty {
+                    ContentUnavailableView(
+                        "No Chapters",
+                        systemImage: "list.bullet.rectangle",
+                        description: Text("This book doesn't expose a table of contents.")
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(items) { item in
+                                Button {
+                                    onSelect(item)
+                                } label: {
+                                    Text(item.title)
+                                        .fontWeight(selectedItemID == item.id ? .semibold : .regular)
+                                        .foregroundStyle(selectedItemID == item.id ? .blue : .primary)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(.vertical, 12)
+                                        .padding(.leading, 16 + CGFloat(item.level * 18))
+                                        .padding(.trailing, 16)
+                                        .background(
+                                            selectedItemID == item.id
+                                                ? Color.blue.opacity(0.1)
+                                                : Color.clear
+                                        )
+                                }
+                                .buttonStyle(.plain)
+
+                                Divider()
+                                    .padding(.leading, 16)
                             }
-                            .buttonStyle(.plain)
-
-                            Divider()
-                                .padding(.leading, 16)
                         }
                     }
                 }
             }
+            .frame(maxWidth: min(proxy.size.width * 0.82, 360), maxHeight: .infinity, alignment: .top)
+            .background(.regularMaterial)
+            .clipShape(RoundedRectangle(cornerRadius: 0, style: .continuous))
+            .shadow(color: .black.opacity(0.15), radius: 18, x: -4, y: 0)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
         }
-        .frame(maxWidth: min(UIScreen.main.bounds.width * 0.82, 360), maxHeight: .infinity, alignment: .top)
-        .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 0, style: .continuous))
-        .shadow(color: .black.opacity(0.15), radius: 18, x: -4, y: 0)
     }
 }
 
@@ -544,10 +671,15 @@ private func flattenChapterLinks(_ links: [ReadiumShared.Link], level: Int = 0) 
 private struct EPUBNavigatorHost: UIViewControllerRepresentable {
     let navigator: EPUBNavigatorViewController
     let onLocationDidChange: (Locator) -> Void
+    let onViewportDidChange: () -> Void
     let onAudioTap: (EPUBReference) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onLocationDidChange: onLocationDidChange, onAudioTap: onAudioTap)
+        Coordinator(
+            onLocationDidChange: onLocationDidChange,
+            onViewportDidChange: onViewportDidChange,
+            onAudioTap: onAudioTap
+        )
     }
 
     func makeUIViewController(context: Context) -> EPUBNavigatorViewController {
@@ -558,6 +690,7 @@ private struct EPUBNavigatorHost: UIViewControllerRepresentable {
 
     func updateUIViewController(_ uiViewController: EPUBNavigatorViewController, context: Context) {
         context.coordinator.onLocationDidChange = onLocationDidChange
+        context.coordinator.onViewportDidChange = onViewportDidChange
         context.coordinator.onAudioTap = onAudioTap
         context.coordinator.attach(to: uiViewController)
         uiViewController.delegate = context.coordinator
@@ -565,6 +698,7 @@ private struct EPUBNavigatorHost: UIViewControllerRepresentable {
 
     final class Coordinator: NSObject, EPUBNavigatorDelegate, UIGestureRecognizerDelegate, WKScriptMessageHandler {
         var onLocationDidChange: (Locator) -> Void
+        var onViewportDidChange: () -> Void
         var onAudioTap: (EPUBReference) -> Void
         private weak var navigator: EPUBNavigatorViewController?
         private var panRecognizer: UIPanGestureRecognizer?
@@ -575,8 +709,13 @@ private struct EPUBNavigatorHost: UIViewControllerRepresentable {
         private let boundaryCooldown: TimeInterval = 0.5
         private let audioTapMessageName = "mediaOverlayAudioTap"
 
-        init(onLocationDidChange: @escaping (Locator) -> Void, onAudioTap: @escaping (EPUBReference) -> Void) {
+        init(
+            onLocationDidChange: @escaping (Locator) -> Void,
+            onViewportDidChange: @escaping () -> Void,
+            onAudioTap: @escaping (EPUBReference) -> Void
+        ) {
             self.onLocationDidChange = onLocationDidChange
+            self.onViewportDidChange = onViewportDidChange
             self.onAudioTap = onAudioTap
         }
 
@@ -598,6 +737,7 @@ private struct EPUBNavigatorHost: UIViewControllerRepresentable {
 
         func navigator(_ navigator: EPUBNavigatorViewController, viewportDidChange viewport: EPUBNavigatorViewController.Viewport?) {
             currentViewport = viewport
+            onViewportDidChange()
         }
 
         func navigator(_ navigator: EPUBNavigatorViewController, setupUserScripts userContentController: WKUserContentController) {

@@ -14,7 +14,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		5FBAAC772F9CB28400CDF69E /* Immersive Reader.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Immersive Reader.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		5FBAAC772F9CB28400CDF69E /* ImmersiveReader.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ImmersiveReader.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -51,7 +51,7 @@
 		5FBAAC782F9CB28400CDF69E /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				5FBAAC772F9CB28400CDF69E /* Immersive Reader.app */,
+				5FBAAC772F9CB28400CDF69E /* ImmersiveReader.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -82,7 +82,7 @@
 				5FBAAC8F2F9D000100CDF69E /* ReadiumAdapterGCDWebServer */,
 			);
 			productName = "Immersive Reader";
-			productReference = 5FBAAC772F9CB28400CDF69E /* Immersive Reader.app */;
+			productReference = 5FBAAC772F9CB28400CDF69E /* ImmersiveReader.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -268,7 +268,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = ImmersiveReader-Info.plist;
+				INFOPLIST_FILE = "ImmersiveReader-Info.plist";
 				IPHONEOS_DEPLOYMENT_TARGET = 26.4;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
@@ -299,7 +299,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = ImmersiveReader-Info.plist;
+				INFOPLIST_FILE = "ImmersiveReader-Info.plist";
 				IPHONEOS_DEPLOYMENT_TARGET = 26.4;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
