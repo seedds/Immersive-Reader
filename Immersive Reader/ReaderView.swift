@@ -318,6 +318,17 @@ struct ReaderView: View {
     private func startPlaybackFromVisibleOrForwardPosition(with navigator: EPUBNavigatorViewController) async {
         suppressPlaybackRetargetUntilClipChange = false
 
+        if await currentClipIsPartiallyVisible(with: navigator) {
+            logReaderEvent(
+                "startPlaybackFromVisibleOrForwardPosition.target",
+                clip: playback.currentClip,
+                extra: "target=currentVisibleClip currentClipIndex=\(String(describing: playback.currentClipIndex))"
+            )
+            playback.play(reason: "startPlaybackFromVisibleOrForwardPosition.resumeVisibleCurrentClip")
+            applyCurrentClipDecoration(with: navigator)
+            return
+        }
+
         guard let target = await resolvedPlaybackStartTarget(with: navigator) else {
             logReaderEvent("startPlaybackFromVisibleOrForwardPosition.noTarget")
             return
@@ -345,6 +356,50 @@ struct ReaderView: View {
         } else {
             applyCurrentClipDecoration(with: navigator)
         }
+    }
+
+    @MainActor
+    private func currentClipIsPartiallyVisible(with navigator: EPUBNavigatorViewController) async -> Bool {
+        guard let currentClip = playback.currentClip,
+              let fragmentID = currentClip.fragmentID,
+              !fragmentID.isEmpty,
+              let visibleLocator = await navigator.firstVisibleElementLocator()
+        else {
+            return false
+        }
+
+        guard normalizedResourceHref(for: currentClip.textResourceHref) == normalizedResourceHref(for: visibleLocator.href.string) else {
+            return false
+        }
+
+        let fragmentIDLiteral = javaScriptStringLiteral(fragmentID)
+        let script = """
+        (() => {
+          const element = document.getElementById(\(fragmentIDLiteral));
+          if (!element) {
+            return false;
+          }
+
+          const style = window.getComputedStyle(element);
+          if (style.display === 'none' || style.visibility === 'hidden') {
+            return false;
+          }
+
+          const rect = element.getBoundingClientRect();
+          return rect.bottom > 0 && rect.top < window.innerHeight;
+        })();
+        """
+
+        let result = await navigator.evaluateJavaScript(script)
+        guard case .success(let value) = result,
+              let isVisible = value as? Bool
+        else {
+            logReaderEvent("currentClipIsPartiallyVisible.failed", clip: currentClip, extra: "fragmentID=\(fragmentID)")
+            return false
+        }
+
+        logReaderEvent("currentClipIsPartiallyVisible", clip: currentClip, extra: "isVisible=\(isVisible)")
+        return isVisible
     }
 
     @MainActor
