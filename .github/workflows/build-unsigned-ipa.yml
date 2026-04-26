@@ -1,0 +1,24 @@
+name: Build Unsigned IPA
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-unsigned-ipa:
+    runs-on: macos-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build unsigned IPA
+        run: bash ./build_unsigned.sh
+
+      - name: Upload unsigned IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ImmersiveReader-unsigned-ipa
+          path: export/ImmersiveReader-unsigned.ipa
+          if-no-files-found: error

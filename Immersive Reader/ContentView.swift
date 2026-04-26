@@ -9,6 +9,7 @@ import SwiftData
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
+import ReadiumShared
 
 struct ContentView: View {
     @StateObject private var uploadServer = UploadServerController()
@@ -231,14 +232,73 @@ private struct BookRow: View {
 
             Spacer(minLength: 0)
 
-            if (book.mediaOverlayClipCount ?? 0) > 0 {
-                Image(systemName: "waveform")
-                    .font(.subheadline)
-                    .foregroundStyle(.green)
-                    .accessibilityLabel("Read aloud ready")
+            HStack(spacing: 10) {
+                if (book.mediaOverlayClipCount ?? 0) > 0 {
+                    Image(systemName: "waveform")
+                        .font(.subheadline)
+                        .foregroundStyle(.green)
+                        .accessibilityLabel("Read aloud ready")
+                }
+
+                BookProgressRing(progress: readingProgress)
             }
         }
         .padding(.vertical, 2)
+    }
+
+    private var readingProgress: Double {
+        guard let lastLocatorJSON = book.lastLocatorJSON,
+              let locator = try? Locator(jsonString: lastLocatorJSON)
+        else {
+            return 0
+        }
+
+        let progress = locator.locations.totalProgression ?? locator.locations.progression ?? 0
+        return min(max(progress, 0), 1)
+    }
+}
+
+private struct BookProgressRing: View {
+    let progress: Double
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(.quaternary)
+
+            ProgressPieSlice(progress: progress)
+                .fill(Color.accentColor)
+        }
+        .frame(width: 18, height: 18)
+        .overlay {
+            Circle()
+                .stroke(.black.opacity(0.08), lineWidth: 0.5)
+        }
+        .accessibilityElement()
+        .accessibilityLabel("Reading progress")
+        .accessibilityValue("\(Int((progress * 100).rounded())) percent")
+    }
+}
+
+private struct ProgressPieSlice: Shape {
+    let progress: Double
+
+    func path(in rect: CGRect) -> Path {
+        let clampedProgress = min(max(progress, 0), 1)
+        guard clampedProgress > 0 else {
+            return Path()
+        }
+
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        let radius = min(rect.width, rect.height) / 2
+        let startAngle = Angle.degrees(-90)
+        let endAngle = Angle.degrees(-90 + (360 * clampedProgress))
+
+        var path = Path()
+        path.move(to: center)
+        path.addArc(center: center, radius: radius, startAngle: startAngle, endAngle: endAngle, clockwise: false)
+        path.closeSubpath()
+        return path
     }
 }
 
