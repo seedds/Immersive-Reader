@@ -13,6 +13,14 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Cache Swift packages
+        uses: actions/cache@v4
+        with:
+          path: .build/source-packages
+          key: ${{ runner.os }}-spm-${{ hashFiles('Immersive Reader.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-spm-
+
       - name: Build unsigned IPA
         run: bash ./build_unsigned.sh
 
@@ -21,4 +29,5 @@ jobs:
         with:
           name: ImmersiveReader-unsigned-ipa
           path: export/ImmersiveReader-unsigned.ipa
+          compression-level: 0
           if-no-files-found: error
