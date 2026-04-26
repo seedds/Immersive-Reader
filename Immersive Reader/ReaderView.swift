@@ -1382,7 +1382,7 @@ private struct EPUBNavigatorHost: UIViewControllerRepresentable {
         private var panRecognizer: UIPanGestureRecognizer?
         private var currentViewport: EPUBNavigatorViewController.Viewport?
         private var lastBoundaryNavigationDate: Date?
-        private let boundaryPullThreshold: CGFloat = 200
+        private let boundaryPullThreshold: CGFloat = 150
         private let boundaryProgressThreshold = 0.9997
         private let boundaryCooldown: TimeInterval = 1.0
         private let audioTapMessageName = "mediaOverlayAudioTap"
