@@ -20,6 +20,11 @@ enum BookImportError: LocalizedError {
 }
 
 enum BookImportService {
+    struct RefreshProgress: Sendable {
+        let fractionCompleted: Double
+        let message: String
+    }
+
     private struct SourceFileFingerprint: Sendable, Equatable {
         let fileSize: Int64?
         let modifiedAt: Date?
@@ -203,7 +208,15 @@ enum BookImportService {
 
     @MainActor
     @discardableResult
-    static func refreshBooksFromDocuments(modelContext: ModelContext) async throws -> [Book] {
+    static func refreshBooksFromDocuments(
+        modelContext: ModelContext,
+        progressHandler: (@MainActor @Sendable (RefreshProgress) -> Void)? = nil
+    ) async throws -> [Book] {
+        await reportRefreshProgress(
+            RefreshProgress(fractionCompleted: 0.02, message: "Scanning EPUB files..."),
+            using: progressHandler
+        )
+
         let libraryDirectory = try AppStorage.documentsDirectory()
         let epubURLs = try FileManager.default.contentsOfDirectory(
             at: libraryDirectory,
@@ -227,12 +240,19 @@ enum BookImportService {
         }
 
         let preparation = try await Task.detached(priority: .userInitiated) {
-            try prepareRefresh(from: epubURLs, existingBooks: snapshots)
+            try await prepareRefresh(from: epubURLs, existingBooks: snapshots, progressHandler: progressHandler)
         }.value
+
+        await reportRefreshProgress(
+            RefreshProgress(fractionCompleted: 0.72, message: "Applying library updates..."),
+            using: progressHandler
+        )
 
         let existingBooksByID = Dictionary(uniqueKeysWithValues: existingBooks.map { ($0.id, $0) })
         let existingBooksByFilename = Dictionary(uniqueKeysWithValues: existingBooks.map { ($0.originalFilename, $0) })
         let fileManager = FileManager.default
+        let totalApplyOperations = max(preparation.removedBookIDs.count + preparation.preparedImports.count, 1)
+        var completedApplyOperations = 0
 
         for bookID in preparation.removedBookIDs {
             guard let book = existingBooksByID[bookID] else {
@@ -242,10 +262,19 @@ enum BookImportService {
             try? fileManager.removeItem(atPath: book.epubFilePath)
             try? fileManager.removeItem(atPath: book.extractedDirectoryPath)
             modelContext.delete(book)
+
+            completedApplyOperations += 1
+            await reportRefreshProgress(
+                RefreshProgress(
+                    fractionCompleted: 0.72 + (Double(completedApplyOperations) / Double(totalApplyOperations)) * 0.23,
+                    message: "Removing missing books \(completedApplyOperations) of \(preparation.removedBookIDs.count)"
+                ),
+                using: progressHandler
+            )
         }
 
         var refreshedBooks: [Book] = []
-        for preparedImport in preparation.preparedImports {
+        for (index, preparedImport) in preparation.preparedImports.enumerated() {
             let book: Book
             if let existingBook = existingBooksByFilename[preparedImport.filename] {
                 existingBook.title = preparedImport.metadata.title ?? displayTitle(for: preparedImport.filename)
@@ -287,9 +316,26 @@ enum BookImportService {
             }
 
             refreshedBooks.append(book)
+
+            completedApplyOperations += 1
+            await reportRefreshProgress(
+                RefreshProgress(
+                    fractionCompleted: 0.72 + (Double(completedApplyOperations) / Double(totalApplyOperations)) * 0.23,
+                    message: "Updating library \(index + 1) of \(preparation.preparedImports.count)"
+                ),
+                using: progressHandler
+            )
         }
 
+        await reportRefreshProgress(
+            RefreshProgress(fractionCompleted: 0.97, message: "Saving library..."),
+            using: progressHandler
+        )
         try modelContext.save()
+        await reportRefreshProgress(
+            RefreshProgress(fractionCompleted: 1, message: "Refresh complete"),
+            using: progressHandler
+        )
         return refreshedBooks
     }
 
@@ -304,7 +350,11 @@ enum BookImportService {
         return try modelContext.fetch(descriptor).first
     }
 
-    nonisolated private static func prepareRefresh(from urls: [URL], existingBooks: [ExistingBookSnapshot]) throws -> RefreshPreparation {
+    nonisolated private static func prepareRefresh(
+        from urls: [URL],
+        existingBooks: [ExistingBookSnapshot],
+        progressHandler: (@MainActor @Sendable (RefreshProgress) -> Void)? = nil
+    ) async throws -> RefreshPreparation {
         let existingByFilename = Dictionary(uniqueKeysWithValues: existingBooks.map { ($0.originalFilename, $0) })
         let filenamesOnDisk = Set(urls.map { AppStorage.sanitizedFilename($0.lastPathComponent) })
         let removedBookIDs = existingBooks
@@ -314,7 +364,7 @@ enum BookImportService {
         var preparedImports: [PreparedBookImport] = []
         preparedImports.reserveCapacity(urls.count)
 
-        for sourceURL in urls {
+        for (index, sourceURL) in urls.enumerated() {
             let filename = AppStorage.sanitizedFilename(sourceURL.lastPathComponent)
             guard filename.lowercased().hasSuffix(".epub") else {
                 throw BookImportError.notEpub(filename)
@@ -323,6 +373,13 @@ enum BookImportService {
             let fingerprint = try sourceFileFingerprint(for: sourceURL)
             if let existingBook = existingByFilename[filename],
                shouldSkipRefresh(for: sourceURL, existingBook: existingBook, fingerprint: fingerprint) {
+                await reportRefreshProgress(
+                    RefreshProgress(
+                        fractionCompleted: preparationFraction(processedFileCount: index + 1, totalFileCount: urls.count),
+                        message: "Preparing book \(index + 1) of \(urls.count)"
+                    ),
+                    using: progressHandler
+                )
                 continue
             }
 
@@ -355,9 +412,41 @@ enum BookImportService {
                 mediaOverlayClipCount: mediaOverlay?.manifest.clipCount,
                 fingerprint: fingerprint
             ))
+
+            await reportRefreshProgress(
+                RefreshProgress(
+                    fractionCompleted: preparationFraction(processedFileCount: index + 1, totalFileCount: urls.count),
+                    message: "Preparing book \(index + 1) of \(urls.count)"
+                ),
+                using: progressHandler
+            )
         }
 
         return RefreshPreparation(preparedImports: preparedImports, removedBookIDs: removedBookIDs)
+    }
+
+    nonisolated private static func reportRefreshProgress(
+        _ progress: RefreshProgress,
+        using progressHandler: (@MainActor @Sendable (RefreshProgress) -> Void)?
+    ) async {
+        guard let progressHandler else {
+            return
+        }
+
+        await progressHandler(
+            RefreshProgress(
+                fractionCompleted: min(max(progress.fractionCompleted, 0), 1),
+                message: progress.message
+            )
+        )
+    }
+
+    nonisolated private static func preparationFraction(processedFileCount: Int, totalFileCount: Int) -> Double {
+        guard totalFileCount > 0 else {
+            return 0.7
+        }
+
+        return 0.08 + (Double(processedFileCount) / Double(totalFileCount)) * 0.6
     }
 
     nonisolated private static func shouldSkipRefresh(

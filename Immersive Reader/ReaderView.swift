@@ -1375,14 +1375,20 @@ private struct EPUBNavigatorHost: UIViewControllerRepresentable {
     }
 
     final class Coordinator: NSObject, EPUBNavigatorDelegate, UIGestureRecognizerDelegate, WKScriptMessageHandler {
+        private enum BoundaryEdge {
+            case top
+            case bottom
+        }
+
         var onLocationDidChange: (Locator) -> Void
         var onViewportDidChange: () -> Void
         var onAudioTap: (EPUBReference) -> Void
         private weak var navigator: EPUBNavigatorViewController?
         private var panRecognizer: UIPanGestureRecognizer?
         private var currentViewport: EPUBNavigatorViewController.Viewport?
+        private var boundaryPanStartEdge: BoundaryEdge?
         private var lastBoundaryNavigationDate: Date?
-        private let boundaryPullThreshold: CGFloat = 150
+        private let boundaryPullThreshold: CGFloat = 100
         private let boundaryProgressThreshold = 0.9997
         private let boundaryCooldown: TimeInterval = 1.0
         private let audioTapMessageName = "mediaOverlayAudioTap"
@@ -1449,30 +1455,65 @@ private struct EPUBNavigatorHost: UIViewControllerRepresentable {
         }
 
         @objc private func handleBoundaryPan(_ gestureRecognizer: UIPanGestureRecognizer) {
-            guard gestureRecognizer.state == .ended,
-                  let navigator,
-                  let viewport = currentViewport,
+            switch gestureRecognizer.state {
+            case .began:
+                boundaryPanStartEdge = currentBoundaryEdge()
+
+            case .ended:
+                defer { boundaryPanStartEdge = nil }
+
+                guard let navigator,
+                      let viewport = currentViewport,
+                      let href = viewport.readingOrder.first,
+                      let progression = viewport.progressions[href],
+                      let boundaryPanStartEdge
+                else {
+                    return
+                }
+
+                let translation = gestureRecognizer.translation(in: gestureRecognizer.view)
+                guard abs(translation.y) > abs(translation.x),
+                      abs(translation.y) >= boundaryPullThreshold,
+                      canTriggerBoundaryNavigation()
+                else {
+                    return
+                }
+
+                if boundaryPanStartEdge == .bottom,
+                   progression.upperBound >= boundaryProgressThreshold,
+                   translation.y < 0 {
+                    triggerBoundaryNavigation { await navigator.goForward(options: .animated) }
+                } else if boundaryPanStartEdge == .top,
+                          progression.lowerBound <= (1 - boundaryProgressThreshold),
+                          translation.y > 0 {
+                    triggerBoundaryNavigation { await navigator.goBackward(options: .animated) }
+                }
+
+            case .cancelled, .failed:
+                boundaryPanStartEdge = nil
+
+            default:
+                break
+            }
+        }
+
+        private func currentBoundaryEdge() -> BoundaryEdge? {
+            guard let viewport = currentViewport,
                   let href = viewport.readingOrder.first,
                   let progression = viewport.progressions[href]
             else {
-                return
+                return nil
             }
 
-            let translation = gestureRecognizer.translation(in: gestureRecognizer.view)
-            guard abs(translation.y) > abs(translation.x),
-                  abs(translation.y) >= boundaryPullThreshold,
-                  canTriggerBoundaryNavigation()
-            else {
-                return
+            if progression.upperBound >= boundaryProgressThreshold {
+                return .bottom
             }
 
-            if progression.upperBound >= boundaryProgressThreshold,
-               translation.y < 0 {
-                triggerBoundaryNavigation { await navigator.goForward(options: .animated) }
-            } else if progression.lowerBound <= (1 - boundaryProgressThreshold),
-                      translation.y > 0 {
-                triggerBoundaryNavigation { await navigator.goBackward(options: .animated) }
+            if progression.lowerBound <= (1 - boundaryProgressThreshold) {
+                return .top
             }
+
+            return nil
         }
 
         private func canTriggerBoundaryNavigation() -> Bool {

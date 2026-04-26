@@ -41,6 +41,8 @@ private struct BooksView: View {
 
     @State private var isImporting = false
     @State private var isRefreshing = false
+    @State private var refreshProgress = 0.0
+    @State private var refreshStatus = ""
     @State private var importError: String?
     @State private var selectedBook: Book?
 
@@ -71,6 +73,7 @@ private struct BooksView: View {
                     }
                 }
             }
+            .allowsHitTesting(!isRefreshing)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
@@ -92,6 +95,7 @@ private struct BooksView: View {
                     } label: {
                         Label("Import EPUB", systemImage: "plus")
                     }
+                    .disabled(isRefreshing)
                 }
             }
             .fileImporter(
@@ -117,6 +121,11 @@ private struct BooksView: View {
             }
             .navigationDestination(item: $selectedBook) { book in
                 ReaderView(book: book)
+            }
+            .overlay {
+                if isRefreshing {
+                    refreshOverlay
+                }
             }
         }
     }
@@ -149,16 +158,54 @@ private struct BooksView: View {
         }
 
         isRefreshing = true
+        refreshProgress = 0
+        refreshStatus = "Starting refresh..."
+
         Task {
             defer {
                 isRefreshing = false
+                refreshStatus = ""
             }
 
             do {
-                try await BookImportService.refreshBooksFromDocuments(modelContext: modelContext)
+                try await BookImportService.refreshBooksFromDocuments(modelContext: modelContext) { progress in
+                    refreshProgress = progress.fractionCompleted
+                    refreshStatus = progress.message
+                }
             } catch {
                 importError = error.localizedDescription
             }
+        }
+    }
+
+    @ViewBuilder
+    private var refreshOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.18)
+                .ignoresSafeArea()
+
+            VStack(spacing: 14) {
+                ProgressView(value: refreshProgress)
+                    .tint(.accentColor)
+
+                Text(refreshStatus)
+                    .font(.headline)
+                    .multilineTextAlignment(.center)
+
+                Text("\(Int(refreshProgress * 100))%")
+                    .font(.subheadline)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 20)
+            .frame(maxWidth: 320)
+            .background {
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .fill(.background)
+                    .shadow(color: .black.opacity(0.14), radius: 24, y: 10)
+            }
+            .padding(.horizontal, 24)
         }
     }
 
