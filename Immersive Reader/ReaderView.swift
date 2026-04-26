@@ -1386,7 +1386,10 @@ private struct EPUBNavigatorHost: UIViewControllerRepresentable {
         private weak var navigator: EPUBNavigatorViewController?
         private var panRecognizer: UIPanGestureRecognizer?
         private var currentViewport: EPUBNavigatorViewController.Viewport?
+        private var armedBoundaryEdge: BoundaryEdge?
         private var boundaryPanStartEdge: BoundaryEdge?
+        private var boundaryPanReachedEdge: BoundaryEdge?
+        private var boundaryPanStartedWithArmedEdge = false
         private var lastBoundaryNavigationDate: Date?
         private let boundaryPullThreshold: CGFloat = 100
         private let boundaryProgressThreshold = 0.9997
@@ -1421,6 +1424,11 @@ private struct EPUBNavigatorHost: UIViewControllerRepresentable {
 
         func navigator(_ navigator: EPUBNavigatorViewController, viewportDidChange viewport: EPUBNavigatorViewController.Viewport?) {
             currentViewport = viewport
+            if let currentBoundaryEdge = currentBoundaryEdge() {
+                boundaryPanReachedEdge = currentBoundaryEdge
+            } else if currentBoundaryEdge() != armedBoundaryEdge {
+                armedBoundaryEdge = nil
+            }
             onViewportDidChange()
         }
 
@@ -1458,39 +1466,59 @@ private struct EPUBNavigatorHost: UIViewControllerRepresentable {
             switch gestureRecognizer.state {
             case .began:
                 boundaryPanStartEdge = currentBoundaryEdge()
+                boundaryPanReachedEdge = boundaryPanStartEdge
+                boundaryPanStartedWithArmedEdge = boundaryPanStartEdge == armedBoundaryEdge
+
+            case .changed:
+                if let currentBoundaryEdge = currentBoundaryEdge() {
+                    boundaryPanReachedEdge = currentBoundaryEdge
+                }
 
             case .ended:
-                defer { boundaryPanStartEdge = nil }
+                defer {
+                    boundaryPanStartEdge = nil
+                    boundaryPanReachedEdge = nil
+                    boundaryPanStartedWithArmedEdge = false
+                }
 
-                guard let navigator,
-                      let viewport = currentViewport,
-                      let href = viewport.readingOrder.first,
-                      let progression = viewport.progressions[href],
-                      let boundaryPanStartEdge
-                else {
+                guard let targetBoundaryEdge = boundaryPanReachedEdge ?? currentBoundaryEdge() else {
+                    armedBoundaryEdge = nil
                     return
                 }
 
                 let translation = gestureRecognizer.translation(in: gestureRecognizer.view)
-                guard abs(translation.y) > abs(translation.x),
-                      abs(translation.y) >= boundaryPullThreshold,
-                      canTriggerBoundaryNavigation()
-                else {
+                let isVerticalPull = abs(translation.y) > abs(translation.x)
+                let isPullingTowardBoundary =
+                    (targetBoundaryEdge == .bottom && translation.y < 0) ||
+                    (targetBoundaryEdge == .top && translation.y > 0)
+
+                guard isVerticalPull, isPullingTowardBoundary else {
+                    armedBoundaryEdge = currentBoundaryEdge() == targetBoundaryEdge ? targetBoundaryEdge : nil
                     return
                 }
 
-                if boundaryPanStartEdge == .bottom,
-                   progression.upperBound >= boundaryProgressThreshold,
-                   translation.y < 0 {
+                guard boundaryPanStartedWithArmedEdge,
+                      boundaryPanStartEdge == targetBoundaryEdge,
+                      abs(translation.y) >= boundaryPullThreshold,
+                      canTriggerBoundaryNavigation(),
+                      let navigator
+                else {
+                    armedBoundaryEdge = targetBoundaryEdge
+                    return
+                }
+
+                armedBoundaryEdge = nil
+
+                if targetBoundaryEdge == .bottom {
                     triggerBoundaryNavigation { await navigator.goForward(options: .animated) }
-                } else if boundaryPanStartEdge == .top,
-                          progression.lowerBound <= (1 - boundaryProgressThreshold),
-                          translation.y > 0 {
+                } else {
                     triggerBoundaryNavigation { await navigator.goBackward(options: .animated) }
                 }
 
             case .cancelled, .failed:
                 boundaryPanStartEdge = nil
+                boundaryPanReachedEdge = nil
+                boundaryPanStartedWithArmedEdge = false
 
             default:
                 break
