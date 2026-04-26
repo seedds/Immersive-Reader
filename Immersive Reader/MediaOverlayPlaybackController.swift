@@ -93,10 +93,12 @@ final class MediaOverlayPlaybackController: ObservableObject {
             return
         }
 
+        logPlaybackEvent("play", clip: clip, extra: "currentClipIndex=\(String(describing: currentClipIndex)) state=\(String(describing: state))")
         start(clip)
     }
 
     func pause() {
+        logPlaybackEvent("pause", clip: currentClip, extra: "currentClipIndex=\(String(describing: currentClipIndex))")
         player?.pause()
         deactivateAudioSession()
         if clips.isEmpty {
@@ -107,6 +109,7 @@ final class MediaOverlayPlaybackController: ObservableObject {
     }
 
     func stop() {
+        logPlaybackEvent("stop", clip: currentClip, extra: "currentClipIndex=\(String(describing: currentClipIndex))")
         player?.pause()
         removeObservers()
         player = nil
@@ -120,6 +123,11 @@ final class MediaOverlayPlaybackController: ObservableObject {
         guard let currentClipIndex, currentClipIndex > 0 else {
             return
         }
+        logPlaybackEvent(
+            "previousClip",
+            clip: currentClip,
+            extra: "fromIndex=\(currentClipIndex) toIndex=\(currentClipIndex - 1)"
+        )
         self.currentClipIndex = currentClipIndex - 1
         if state.isPlaying {
             play()
@@ -132,6 +140,11 @@ final class MediaOverlayPlaybackController: ObservableObject {
         }
 
         let nextIndex = clips.index(after: currentClipIndex)
+        logPlaybackEvent(
+            "nextClip",
+            clip: currentClip,
+            extra: "fromIndex=\(currentClipIndex) candidateNextIndex=\(nextIndex) isPlaying=\(state.isPlaying)"
+        )
         guard clips.indices.contains(nextIndex) else {
             player?.pause()
             removeObservers()
@@ -151,6 +164,11 @@ final class MediaOverlayPlaybackController: ObservableObject {
             return
         }
 
+        logPlaybackEvent(
+            "selectClip",
+            clip: clips[index],
+            extra: "targetIndex=\(index) autoplay=\(autoplay) previousIndex=\(String(describing: currentClipIndex))"
+        )
         player?.pause()
         removeObservers()
         deactivateAudioSession()
@@ -165,6 +183,11 @@ final class MediaOverlayPlaybackController: ObservableObject {
     }
 
     private func start(_ clip: EPUBMediaOverlayClip) {
+        logPlaybackEvent(
+            "start",
+            clip: clip,
+            extra: "currentClipIndex=\(String(describing: currentClipIndex)) loadedAudioPath=\(loadedAudioPath ?? "nil")"
+        )
         removeObservers()
 
         do {
@@ -175,10 +198,12 @@ final class MediaOverlayPlaybackController: ObservableObject {
         }
 
         let player = preparedPlayer(for: clip)
+        player.pause()
         player.seek(to: CMTime(seconds: clip.clipBegin, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, clip, player] _ in
             guard let self else { return }
             DispatchQueue.main.async {
                 guard self.isCurrentClip(clip) else { return }
+                self.logPlaybackEvent("seekCompleted", clip: clip, extra: "currentClipIndex=\(String(describing: self.currentClipIndex))")
                 self.addObservers(for: clip)
                 player.play()
                 self.state = .playing
@@ -190,17 +215,20 @@ final class MediaOverlayPlaybackController: ObservableObject {
         if let player,
            loadedAudioPath == clip.audioPath,
            player.currentItem != nil {
+            logPlaybackEvent("preparedPlayer.reuseCurrentItem", clip: clip)
             return player
         }
 
         let item = AVPlayerItem(url: URL(fileURLWithPath: clip.audioPath))
 
         if let player {
+            logPlaybackEvent("preparedPlayer.replaceCurrentItem", clip: clip)
             player.replaceCurrentItem(with: item)
             loadedAudioPath = clip.audioPath
             return player
         }
 
+        logPlaybackEvent("preparedPlayer.createPlayer", clip: clip)
         let player = AVPlayer(playerItem: item)
         self.player = player
         loadedAudioPath = clip.audioPath
@@ -223,23 +251,27 @@ final class MediaOverlayPlaybackController: ObservableObject {
         guard let player else { return }
 
         if let clipEnd = clip.clipEnd, clipEnd > clip.clipBegin {
+            logPlaybackEvent("addBoundaryObserver", clip: clip, extra: "clipEnd=\(clipEnd)")
             boundaryObserver = player.addBoundaryTimeObserver(
                 forTimes: [NSValue(time: CMTime(seconds: clipEnd, preferredTimescale: 600))],
                 queue: .main
             ) { [weak self] in
                 Task { @MainActor [weak self] in
+                    self?.logPlaybackEvent("boundaryObserverFired", clip: self?.currentClip)
                     self?.nextClip()
                 }
             }
         }
 
         if clip.clipEnd == nil, let item = player.currentItem {
+            logPlaybackEvent("addItemEndObserver", clip: clip)
             endObserver = NotificationCenter.default.addObserver(
                 forName: .AVPlayerItemDidPlayToEndTime,
                 object: item,
                 queue: .main
             ) { [weak self] _ in
                 Task { @MainActor [weak self] in
+                    self?.logPlaybackEvent("itemEndObserverFired", clip: self?.currentClip)
                     self?.nextClip()
                 }
             }
@@ -256,6 +288,22 @@ final class MediaOverlayPlaybackController: ObservableObject {
             NotificationCenter.default.removeObserver(endObserver)
         }
         endObserver = nil
+    }
+
+    private func logPlaybackEvent(_ event: String, clip: EPUBMediaOverlayClip?, extra: String? = nil) {
+        let clipDescription: String
+        if let clip {
+            let audioName = URL(fileURLWithPath: clip.audioPath).lastPathComponent
+            clipDescription = "fragment=\(clip.fragmentID ?? "nil") href=\(clip.textResourceHref) begin=\(clip.clipBegin) end=\(String(describing: clip.clipEnd)) audio=\(audioName)"
+        } else {
+            clipDescription = "clip=nil"
+        }
+
+        if let extra {
+            print("[Playback] \(event) | \(clipDescription) | \(extra)")
+        } else {
+            print("[Playback] \(event) | \(clipDescription)")
+        }
     }
 
     private func configureAudioSession() throws {

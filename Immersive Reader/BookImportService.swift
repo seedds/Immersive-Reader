@@ -304,7 +304,7 @@ enum BookImportService {
         return try modelContext.fetch(descriptor).first
     }
 
-    private static func prepareRefresh(from urls: [URL], existingBooks: [ExistingBookSnapshot]) throws -> RefreshPreparation {
+    nonisolated private static func prepareRefresh(from urls: [URL], existingBooks: [ExistingBookSnapshot]) throws -> RefreshPreparation {
         let existingByFilename = Dictionary(uniqueKeysWithValues: existingBooks.map { ($0.originalFilename, $0) })
         let filenamesOnDisk = Set(urls.map { AppStorage.sanitizedFilename($0.lastPathComponent) })
         let removedBookIDs = existingBooks
@@ -360,7 +360,7 @@ enum BookImportService {
         return RefreshPreparation(preparedImports: preparedImports, removedBookIDs: removedBookIDs)
     }
 
-    private static func shouldSkipRefresh(
+    nonisolated private static func shouldSkipRefresh(
         for sourceURL: URL,
         existingBook: ExistingBookSnapshot,
         fingerprint: SourceFileFingerprint
@@ -381,7 +381,7 @@ enum BookImportService {
         return true
     }
 
-    private static func sourceFileFingerprint(for url: URL) throws -> SourceFileFingerprint {
+    nonisolated private static func sourceFileFingerprint(for url: URL) throws -> SourceFileFingerprint {
         let resourceValues = try url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
         let fileSize = resourceValues.fileSize.map(Int64.init)
         return SourceFileFingerprint(

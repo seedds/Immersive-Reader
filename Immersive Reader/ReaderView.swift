@@ -242,6 +242,11 @@ struct ReaderView: View {
     private func scheduleScrollSettledPlaybackSync(with navigator: EPUBNavigatorViewController) {
         scrollSettledPlaybackTask?.cancel()
 
+        logReaderEvent(
+            "scheduleScrollSettledPlaybackSync",
+            extra: "isPlaying=\(playback.state.isPlaying) programmatic=\(isProgrammaticPlaybackScrollInFlight) suppressRetarget=\(suppressPlaybackRetargetUntilClipChange) currentClipIndex=\(String(describing: playback.currentClipIndex))"
+        )
+
         guard playback.state.isPlaying,
               !isProgrammaticPlaybackScrollInFlight,
               !suppressPlaybackRetargetUntilClipChange
@@ -261,6 +266,10 @@ struct ReaderView: View {
 
     @MainActor
     private func handleViewportDidChange(navigator: EPUBNavigatorViewController) async {
+        logReaderEvent(
+            "handleViewportDidChange",
+            extra: "programmaticState=\(String(describing: programmaticPlaybackScrollState)) currentClipIndex=\(String(describing: playback.currentClipIndex))"
+        )
         if case .autoFollowInDocument = programmaticPlaybackScrollState?.kind,
            let visibleLocator = await navigator.firstVisibleElementLocator() {
             maybeEndProgrammaticPlaybackScroll(
@@ -304,6 +313,12 @@ struct ReaderView: View {
 
     @MainActor
     private func retargetPlaybackToFirstVisibleClipIfNeeded(with navigator: EPUBNavigatorViewController) async {
+        logReaderEvent(
+            "retargetPlaybackToFirstVisibleClipIfNeeded.begin",
+            clip: playback.currentClip,
+            extra: "isPlaying=\(playback.state.isPlaying) programmatic=\(isProgrammaticPlaybackScrollInFlight) suppressRetarget=\(suppressPlaybackRetargetUntilClipChange)"
+        )
+
         guard playback.state.isPlaying,
               !isProgrammaticPlaybackScrollInFlight,
               !suppressPlaybackRetargetUntilClipChange,
@@ -316,9 +331,15 @@ struct ReaderView: View {
               !matchesCurrentClip(visibleReference),
               visibleClipIndex != playback.currentClipIndex
         else {
+            logReaderEvent("retargetPlaybackToFirstVisibleClipIfNeeded.skipped")
             return
         }
 
+        logReaderEvent(
+            "retargetPlaybackToFirstVisibleClipIfNeeded.selecting",
+            reference: visibleReference,
+            extra: "visibleClipIndex=\(visibleClipIndex) currentClipIndex=\(String(describing: playback.currentClipIndex))"
+        )
         suppressNextClipNavigation = true
         playback.selectClip(at: visibleClipIndex, autoplay: true)
         applyCurrentClipDecoration(with: navigator)
@@ -358,9 +379,15 @@ struct ReaderView: View {
         suppressPlaybackRetargetUntilClipChange = false
 
         guard let target = await resolvedPlaybackStartTarget(with: navigator) else {
+            logReaderEvent("startPlaybackFromVisibleOrForwardPosition.noTarget")
             return
         }
 
+        logReaderEvent(
+            "startPlaybackFromVisibleOrForwardPosition.target",
+            clip: playback.currentClip,
+            extra: "targetClipIndex=\(target.clipIndex) shouldNavigate=\(target.shouldNavigate) currentClipIndex=\(String(describing: playback.currentClipIndex))"
+        )
         if playback.currentClipIndex != target.clipIndex {
             if !target.shouldNavigate {
                 suppressNextClipNavigation = true
@@ -383,9 +410,11 @@ struct ReaderView: View {
     @MainActor
     private func playFromTappedReference(_ reference: EPUBReference, navigator: EPUBNavigatorViewController) async {
         guard let clipIndex = exactClipIndex(for: reference) else {
+            logReaderEvent("playFromTappedReference.noExactMatch", reference: reference)
             return
         }
 
+        logReaderEvent("playFromTappedReference.match", reference: reference, extra: "clipIndex=\(clipIndex)")
         suppressPlaybackRetargetUntilClipChange = false
         suppressNextTapPlaybackNavigation = true
         playback.selectClip(at: clipIndex, autoplay: true)
@@ -402,6 +431,21 @@ struct ReaderView: View {
         let exactReference = EPUBReference(
             resourceHref: reference.resourceHref,
             fragmentID: fragmentID
+        )
+
+        let matches = playback.clips.enumerated().compactMap { index, clip -> Int? in
+            guard normalizedResourceHref(for: clip.textResourceHref) == exactReference.resourceHref,
+                  clip.fragmentID == exactReference.fragmentID
+            else {
+                return nil
+            }
+
+            return index
+        }
+        logReaderEvent(
+            "exactClipIndex",
+            reference: exactReference,
+            extra: "matches=\(matches) currentClipIndex=\(String(describing: playback.currentClipIndex))"
         )
 
         let match = playback.clips.firstIndex(where: { clip in
@@ -486,6 +530,11 @@ struct ReaderView: View {
 
     @MainActor
     private func handleCurrentClipChange(oldIndex: Int?, newIndex: Int?, navigator: EPUBNavigatorViewController) {
+        logReaderEvent(
+            "handleCurrentClipChange",
+            clip: playback.currentClip,
+            extra: "oldIndex=\(String(describing: oldIndex)) newIndex=\(String(describing: newIndex)) suppressNextClipNavigation=\(suppressNextClipNavigation) suppressNextTapPlaybackNavigation=\(suppressNextTapPlaybackNavigation) suppressRetargetUntilClipChange=\(suppressPlaybackRetargetUntilClipChange) state=\(String(describing: playback.state))"
+        )
         applyCurrentClipDecoration(with: navigator)
 
         if oldIndex != newIndex {
@@ -533,6 +582,8 @@ struct ReaderView: View {
             return
         }
 
+        logReaderEvent("autoFollowCurrentClipIfNeeded.begin", clip: currentClip)
+
         let fragmentIDLiteral = javaScriptStringLiteral(fragmentID)
         let script = """
         (() => {
@@ -578,6 +629,7 @@ struct ReaderView: View {
             }
 
             await MainActor.run {
+                logReaderEvent("autoFollowCurrentClipIfNeeded.result", clip: currentClip, extra: "action=\(action)")
                 if action == "scrolled" {
                     suppressPlaybackRetargetUntilClipChange = true
                 } else {
@@ -602,6 +654,7 @@ struct ReaderView: View {
     private func beginProgrammaticPlaybackScroll(kind: ProgrammaticPlaybackScrollKind, target: EPUBReference) {
         scrollSettledPlaybackTask?.cancel()
         programmaticPlaybackScrollState = ProgrammaticPlaybackScrollState(kind: kind, target: target)
+        logReaderEvent("beginProgrammaticPlaybackScroll", reference: target, extra: "kind=\(String(describing: kind))")
     }
 
     @MainActor
@@ -616,12 +669,14 @@ struct ReaderView: View {
         case .goToClip:
             if state.target.resourceHref == reference.resourceHref {
                 if state.target.fragmentID == nil || state.target.fragmentID == reference.fragmentID {
+                    logReaderEvent("maybeEndProgrammaticPlaybackScroll.endGoToClip", reference: reference)
                     endProgrammaticPlaybackScroll()
                 }
             }
 
         case .autoFollowInDocument:
             if reference == state.target {
+                logReaderEvent("maybeEndProgrammaticPlaybackScroll.endAutoFollow", reference: reference)
                 endProgrammaticPlaybackScroll()
             }
         }
@@ -629,6 +684,7 @@ struct ReaderView: View {
 
     @MainActor
     private func endProgrammaticPlaybackScroll() {
+        logReaderEvent("endProgrammaticPlaybackScroll", extra: "previousState=\(String(describing: programmaticPlaybackScrollState))")
         programmaticPlaybackScrollState = nil
     }
 
@@ -641,10 +697,12 @@ struct ReaderView: View {
               !currentFragmentID.isEmpty,
               let visibleLocator = await navigator.firstVisibleElementLocator()
         else {
+            logReaderEvent("firstVisibleSpokenReferenceIfCurrentClipIsOffscreen.missingPrereq", clip: currentClip)
             return nil
         }
 
         if await isFragmentPartiallyVisible(currentFragmentID, navigator: navigator) {
+            logReaderEvent("firstVisibleSpokenReferenceIfCurrentClipIsOffscreen.currentPartiallyVisible", clip: currentClip)
             return nil
         }
 
@@ -658,6 +716,7 @@ struct ReaderView: View {
         )
 
         if currentReference == visibleReference {
+            logReaderEvent("firstVisibleSpokenReferenceIfCurrentClipIsOffscreen.sameReference", reference: visibleReference)
             return nil
         }
 
@@ -665,6 +724,7 @@ struct ReaderView: View {
         let playableFragmentIDs = playableFragmentIDs(for: visibleResourceHref)
         guard !playableFragmentIDs.isEmpty
         else {
+            logReaderEvent("firstVisibleSpokenReferenceIfCurrentClipIsOffscreen.noPlayableFragments", reference: visibleReference)
             return nil
         }
 
@@ -672,10 +732,18 @@ struct ReaderView: View {
             fragmentIDs: playableFragmentIDs,
             navigator: navigator
         ) else {
+            logReaderEvent("firstVisibleSpokenReferenceIfCurrentClipIsOffscreen.noViewportFragment", reference: visibleReference)
             return nil
         }
 
-        return EPUBReference(resourceHref: visibleResourceHref, fragmentID: visibleFragmentID)
+        let result = EPUBReference(resourceHref: visibleResourceHref, fragmentID: visibleFragmentID)
+        logReaderEvent(
+            "firstVisibleSpokenReferenceIfCurrentClipIsOffscreen.result",
+            clip: currentClip,
+            reference: result,
+            extra: "visibleLocatorHref=\(visibleLocator.href.string)"
+        )
+        return result
     }
 
     @MainActor
@@ -704,9 +772,11 @@ struct ReaderView: View {
         guard case .success(let value) = result,
               let isVisible = value as? Bool
         else {
+            logReaderEvent("isFragmentPartiallyVisible.failed", extra: "fragmentID=\(fragmentID)")
             return false
         }
 
+        logReaderEvent("isFragmentPartiallyVisible", extra: "fragmentID=\(fragmentID) isVisible=\(isVisible)")
         return isVisible
     }
 
@@ -950,6 +1020,32 @@ private struct ProgrammaticPlaybackScrollState {
 private struct PlaybackStartTarget {
     let clipIndex: Int
     let shouldNavigate: Bool
+}
+
+private func logReaderEvent(
+    _ event: String,
+    clip: EPUBMediaOverlayClip? = nil,
+    reference: EPUBReference? = nil,
+    extra: String? = nil
+) {
+    var parts: [String] = ["[Reader] \(event)"]
+
+    if let clip {
+        let audioName = URL(fileURLWithPath: clip.audioPath).lastPathComponent
+        parts.append(
+            "clip(fragment=\(clip.fragmentID ?? "nil") href=\(clip.textResourceHref) begin=\(clip.clipBegin) end=\(String(describing: clip.clipEnd)) audio=\(audioName))"
+        )
+    }
+
+    if let reference {
+        parts.append("reference(resource=\(reference.resourceHref) fragment=\(reference.fragmentID ?? "nil"))")
+    }
+
+    if let extra {
+        parts.append(extra)
+    }
+
+    print(parts.joined(separator: " | "))
 }
 
 private struct ChapterDrawer: View {
