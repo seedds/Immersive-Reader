@@ -16,8 +16,8 @@ enum ReaderSettings {
     static let lineHeightKey = "readerLineHeight"
     static let themeKey = "readerTheme"
     static let readAloudColorKey = "readerReadAloudColor"
-    static let defaultFontSize = 1.0
-    static let defaultLineHeight = 1.2
+    static let defaultFontSize = 1.2
+    static let defaultLineHeight = 1.0
     static let defaultReadAloudColorHex = "#34C759"
     static let fontSizeRange = 0.8 ... 2.0
     static let lineHeightRange = 1.0 ... 2.0
