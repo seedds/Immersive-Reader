@@ -2,7 +2,7 @@
 
 ImmersiveReader is an iOS/iPadOS EPUB reader built with SwiftUI, SwiftData, and Readium.
 
-It focuses on EPUB3 reading with synced read-aloud playback, active text highlighting, upload/import workflows, reading progress restore, chapter navigation, and reader typography controls.
+It focuses on EPUB3 reading with synced read-aloud playback, active text highlighting, upload/import workflows, reading progress restore, chapter navigation, reader appearance controls, and resume-aware playback.
 
 ## Features
 
@@ -14,10 +14,13 @@ It focuses on EPUB3 reading with synced read-aloud playback, active text highlig
 - EPUB metadata and cover extraction
 - EPUB3 media overlay parsing
 - Read-aloud playback with active text highlighting
+- Customizable highlight color
 - Chapter drawer navigation
 - Tap-to-play on spoken text
 - Scroll-stop retargeting to the visible spoken line
-- Reader font size and font family settings
+- Reader font size, font family, and line height settings
+- App theme selection: System, Light, or Dark
+- Resume the last played audio segment for each book
 - Files app exposure for imported EPUBs
 
 ## App Structure
@@ -26,15 +29,18 @@ The app has three tabs:
 
 - `Books`: browse, import, refresh, delete, and open books
 - `Upload`: run a local upload server and manage uploaded books
-- `Settings`: reader typography settings
+- `Settings`: reader typography, theme, and highlight color settings
 
 ## Reader Behavior
 
 - Reader opens in scroll mode by default
 - Playback bar appears only for books with parsed media overlays
 - Active spoken text is highlighted in the EPUB view
+- The highlight color can be customized from Settings
 - Chapter selection can jump playback to the first matching clip
 - Manual scroll-and-stop can retarget playback to the first visible playable fragment
+- Reopening a book with a saved last-played segment navigates to that segment and highlights it without autoplay
+- Reopening a book with no saved played segment does not pre-highlight any text
 
 ## Storage Layout
 
