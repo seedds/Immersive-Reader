@@ -10,7 +10,7 @@ import ReadiumNavigator
 import SwiftUI
 import UIKit
 
-enum ReaderSettings {
+nonisolated enum ReaderSettings {
     static let fontSizeKey = "readerFontSize"
     static let fontFamilyKey = "readerFontFamily"
     static let themeKey = "readerTheme"
@@ -197,7 +197,7 @@ enum ReaderSettings {
     }
 }
 
-struct ReadAloudColorHSB: Equatable {
+nonisolated struct ReadAloudColorHSB: Equatable {
     let hue: Double
     let saturation: Double
     let brightness: Double

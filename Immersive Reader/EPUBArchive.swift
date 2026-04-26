@@ -43,7 +43,7 @@ struct EPUBArchive {
         let uncompressedSize: UInt32
         let localHeaderOffset: UInt32
 
-        var isDirectory: Bool {
+        nonisolated var isDirectory: Bool {
             path.hasSuffix("/")
         }
     }
@@ -51,17 +51,17 @@ struct EPUBArchive {
     private let data: Data
     private let entries: [Entry]
 
-    init(url: URL) throws {
+    nonisolated init(url: URL) throws {
         data = try Data(contentsOf: url)
         entries = try Self.readCentralDirectory(from: data)
     }
 
-    static func validateEPUB(at url: URL) throws {
+    nonisolated static func validateEPUB(at url: URL) throws {
         let archive = try EPUBArchive(url: url)
         try archive.validateEPUB()
     }
 
-    func validateEPUB() throws {
+    nonisolated func validateEPUB() throws {
         guard let mimetypeData = try data(for: "mimetype"),
               String(data: mimetypeData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) == "application/epub+zip",
               entries.contains(where: { $0.path == "META-INF/container.xml" })
@@ -70,7 +70,7 @@ struct EPUBArchive {
         }
     }
 
-    func extract(to destination: URL) throws {
+    nonisolated func extract(to destination: URL) throws {
         try validateEPUB()
         let fileManager = FileManager.default
         try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
@@ -90,14 +90,14 @@ struct EPUBArchive {
         }
     }
 
-    private func data(for path: String) throws -> Data? {
+    nonisolated private func data(for path: String) throws -> Data? {
         guard let entry = entries.first(where: { $0.path == path }) else {
             return nil
         }
         return try data(for: entry)
     }
 
-    private func data(for entry: Entry) throws -> Data {
+    nonisolated private func data(for entry: Entry) throws -> Data {
         if entry.flags & 0x1 == 0x1 {
             throw EPUBArchiveError.corruptEntry(entry.path)
         }
@@ -127,7 +127,7 @@ struct EPUBArchive {
         }
     }
 
-    private func inflate(_ compressedData: Data, expectedSize: Int, path: String) throws -> Data {
+    nonisolated private func inflate(_ compressedData: Data, expectedSize: Int, path: String) throws -> Data {
         guard expectedSize >= 0 else {
             throw EPUBArchiveError.corruptEntry(path)
         }
@@ -161,7 +161,7 @@ struct EPUBArchive {
         }
     }
 
-    private func safeRelativePath(_ path: String) throws -> String {
+    nonisolated private func safeRelativePath(_ path: String) throws -> String {
         guard !path.hasPrefix("/"), !path.hasPrefix("~") else {
             throw EPUBArchiveError.unsafePath(path)
         }
@@ -174,7 +174,7 @@ struct EPUBArchive {
         return path
     }
 
-    private static func readCentralDirectory(from data: Data) throws -> [Entry] {
+    nonisolated private static func readCentralDirectory(from data: Data) throws -> [Entry] {
         guard let eocdOffset = findEndOfCentralDirectory(in: data) else {
             throw EPUBArchiveError.invalidArchive
         }
@@ -230,7 +230,7 @@ struct EPUBArchive {
         return entries
     }
 
-    private static func findEndOfCentralDirectory(in data: Data) -> Int? {
+    nonisolated private static func findEndOfCentralDirectory(in data: Data) -> Int? {
         guard data.count >= 22 else { return nil }
 
         let minimumOffset = max(0, data.count - 65_557)
@@ -248,11 +248,11 @@ struct EPUBArchive {
 }
 
 private extension Data {
-    func uint16(at offset: Int) -> UInt16 {
+    nonisolated func uint16(at offset: Int) -> UInt16 {
         UInt16(self[offset]) | (UInt16(self[offset + 1]) << 8)
     }
 
-    func uint32(at offset: Int) -> UInt32 {
+    nonisolated func uint32(at offset: Int) -> UInt32 {
         UInt32(self[offset]) |
             (UInt32(self[offset + 1]) << 8) |
             (UInt32(self[offset + 2]) << 16) |

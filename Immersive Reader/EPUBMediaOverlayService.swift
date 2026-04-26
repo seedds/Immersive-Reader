@@ -7,26 +7,47 @@
 
 import Foundation
 
-struct EPUBMediaOverlayManifest: Codable {
+nonisolated struct EPUBMediaOverlayManifest: Codable {
     var activeClass: String?
     var playbackActiveClass: String?
     var narrator: String?
     var duration: Double?
     var documents: [EPUBMediaOverlayDocument]
 
-    var clipCount: Int {
+    nonisolated init(
+        activeClass: String? = nil,
+        playbackActiveClass: String? = nil,
+        narrator: String? = nil,
+        duration: Double? = nil,
+        documents: [EPUBMediaOverlayDocument]
+    ) {
+        self.activeClass = activeClass
+        self.playbackActiveClass = playbackActiveClass
+        self.narrator = narrator
+        self.duration = duration
+        self.documents = documents
+    }
+
+    nonisolated var clipCount: Int {
         documents.reduce(0) { $0 + $1.clips.count }
     }
 }
 
-struct EPUBMediaOverlayDocument: Codable {
+nonisolated struct EPUBMediaOverlayDocument: Codable {
     var smilHref: String
     var smilPath: String
     var associatedContentHref: String?
     var clips: [EPUBMediaOverlayClip]
+
+    nonisolated init(smilHref: String, smilPath: String, associatedContentHref: String?, clips: [EPUBMediaOverlayClip]) {
+        self.smilHref = smilHref
+        self.smilPath = smilPath
+        self.associatedContentHref = associatedContentHref
+        self.clips = clips
+    }
 }
 
-struct EPUBMediaOverlayClip: Codable {
+nonisolated struct EPUBMediaOverlayClip: Codable {
     var textHref: String
     var textResourceHref: String
     var fragmentID: String?
@@ -35,19 +56,42 @@ struct EPUBMediaOverlayClip: Codable {
     var clipBegin: Double
     var clipEnd: Double?
 
-    var duration: Double? {
+    nonisolated init(
+        textHref: String,
+        textResourceHref: String,
+        fragmentID: String?,
+        audioHref: String,
+        audioPath: String,
+        clipBegin: Double,
+        clipEnd: Double?
+    ) {
+        self.textHref = textHref
+        self.textResourceHref = textResourceHref
+        self.fragmentID = fragmentID
+        self.audioHref = audioHref
+        self.audioPath = audioPath
+        self.clipBegin = clipBegin
+        self.clipEnd = clipEnd
+    }
+
+    nonisolated var duration: Double? {
         guard let clipEnd else { return nil }
         return max(0, clipEnd - clipBegin)
     }
 }
 
-struct EPUBMediaOverlayParseResult {
+nonisolated struct EPUBMediaOverlayParseResult {
     var manifest: EPUBMediaOverlayManifest
     var jsonURL: URL
+
+    nonisolated init(manifest: EPUBMediaOverlayManifest, jsonURL: URL) {
+        self.manifest = manifest
+        self.jsonURL = jsonURL
+    }
 }
 
 enum EPUBMediaOverlayService {
-    static func parseAndWrite(in extractedDirectory: URL, package: EPUBPackageInfo) throws -> EPUBMediaOverlayParseResult? {
+    nonisolated static func parseAndWrite(in extractedDirectory: URL, package: EPUBPackageInfo) throws -> EPUBMediaOverlayParseResult? {
         guard let manifest = parse(in: extractedDirectory, package: package), manifest.clipCount > 0 else {
             return nil
         }
@@ -61,7 +105,7 @@ enum EPUBMediaOverlayService {
         return EPUBMediaOverlayParseResult(manifest: manifest, jsonURL: jsonURL)
     }
 
-    private static func parse(in extractedDirectory: URL, package: EPUBPackageInfo) -> EPUBMediaOverlayManifest? {
+    nonisolated private static func parse(in extractedDirectory: URL, package: EPUBPackageInfo) -> EPUBMediaOverlayManifest? {
         let packageDirectory = package.packageURL.deletingLastPathComponent()
         let smilItemsById = Dictionary(uniqueKeysWithValues: package.manifestItems.compactMap { item in
             isSMIL(item) ? (item.id, item) : nil
@@ -119,11 +163,11 @@ enum EPUBMediaOverlayService {
         )
     }
 
-    private static func isSMIL(_ item: EPUBPackageInfo.ManifestItem) -> Bool {
+    nonisolated private static func isSMIL(_ item: EPUBPackageInfo.ManifestItem) -> Bool {
         item.mediaType == "application/smil+xml" || item.href.lowercased().hasSuffix(".smil")
     }
 
-    fileprivate static func relativePath(for url: URL, root: URL) -> String? {
+    nonisolated fileprivate static func relativePath(for url: URL, root: URL) -> String? {
         let path = url.standardizedFileURL.path
         let rootPath = root.standardizedFileURL.path
         guard path.hasPrefix(rootPath + "/") else {
@@ -134,7 +178,7 @@ enum EPUBMediaOverlayService {
 }
 
 enum EPUBMediaOverlayTimeParser {
-    static func seconds(from value: String?) -> Double? {
+    nonisolated static func seconds(from value: String?) -> Double? {
         guard var text = value?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else {
             return nil
         }
@@ -177,7 +221,7 @@ enum EPUBMediaOverlayTimeParser {
     }
 }
 
-private final class SMILParser: NSObject, XMLParserDelegate {
+nonisolated private final class SMILParser: NSObject, XMLParserDelegate {
     private struct ParBuilder {
         var textSource: String?
         var audioSource: String?
@@ -190,12 +234,12 @@ private final class SMILParser: NSObject, XMLParserDelegate {
     private var parStack: [ParBuilder] = []
     private var clips: [EPUBMediaOverlayClip] = []
 
-    init(extractedDirectory: URL, smilURL: URL) {
+    nonisolated init(extractedDirectory: URL, smilURL: URL) {
         self.extractedDirectory = extractedDirectory
         self.smilURL = smilURL
     }
 
-    func parse() -> [EPUBMediaOverlayClip] {
+    nonisolated func parse() -> [EPUBMediaOverlayClip] {
         guard let parser = XMLParser(contentsOf: smilURL) else {
             return []
         }
@@ -204,7 +248,7 @@ private final class SMILParser: NSObject, XMLParserDelegate {
         return clips
     }
 
-    func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName qName: String?, attributes attributeDict: [String: String] = [:]) {
+    nonisolated func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName qName: String?, attributes attributeDict: [String: String] = [:]) {
         switch localName(elementName) {
         case "par":
             parStack.append(ParBuilder())
@@ -225,14 +269,14 @@ private final class SMILParser: NSObject, XMLParserDelegate {
         }
     }
 
-    func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
+    nonisolated func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
         guard localName(elementName) == "par", let builder = parStack.popLast(), let clip = makeClip(from: builder) else {
             return
         }
         clips.append(clip)
     }
 
-    private func makeClip(from builder: ParBuilder) -> EPUBMediaOverlayClip? {
+    nonisolated private func makeClip(from builder: ParBuilder) -> EPUBMediaOverlayClip? {
         guard let textSource = builder.textSource,
               let audioSource = builder.audioSource,
               let textReference = resolveReference(textSource),
@@ -252,7 +296,7 @@ private final class SMILParser: NSObject, XMLParserDelegate {
         )
     }
 
-    private func resolveReference(_ href: String) -> (href: String, resourceHref: String, fragmentID: String?, fileURL: URL)? {
+    nonisolated private func resolveReference(_ href: String) -> (href: String, resourceHref: String, fragmentID: String?, fileURL: URL)? {
         let fragmentID = fragment(from: href)
         let smilDirectory = smilURL.deletingLastPathComponent()
         guard let fileURL = EPUBMetadataService.resolvedURL(
@@ -267,7 +311,7 @@ private final class SMILParser: NSObject, XMLParserDelegate {
         return (fullHref, resourceHref, fragmentID, fileURL)
     }
 
-    private func fragment(from href: String) -> String? {
+    nonisolated private func fragment(from href: String) -> String? {
         if let hashIndex = href.lastIndex(of: "#") {
             return String(href[href.index(after: hashIndex)...])
         }
@@ -280,6 +324,6 @@ private final class SMILParser: NSObject, XMLParserDelegate {
     }
 }
 
-private func localName(_ elementName: String) -> String {
+nonisolated private func localName(_ elementName: String) -> String {
     elementName.split(separator: ":").last.map(String.init)?.lowercased() ?? elementName.lowercased()
 }
