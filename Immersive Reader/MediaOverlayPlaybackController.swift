@@ -30,6 +30,7 @@ final class MediaOverlayPlaybackController: ObservableObject {
 
     private static var nextTransitionID: Int = 0
     private let seamlessAutoAdvanceTolerance: Double = 0.1
+    private var playbackRate = ReaderSettings.defaultPlaybackSpeed
 
     private var player: AVPlayer?
     private var loadedAudioPath: String?
@@ -241,6 +242,18 @@ final class MediaOverlayPlaybackController: ObservableObject {
         }
     }
 
+    func setPlaybackRate(_ rate: Double) {
+        let normalizedRate = ReaderSettings.normalizedPlaybackSpeed(rate)
+        playbackRate = normalizedRate
+        logPlaybackEvent(
+            "setPlaybackRate",
+            clip: currentClip,
+            transitionID: currentTransitionID,
+            extra: "playbackRate=\(formattedSeconds(normalizedRate)) state=\(String(describing: state))"
+        )
+        applyPlaybackRateIfNeeded(shouldUpdateActiveRate: state.isPlaying, reason: "setPlaybackRate")
+    }
+
     private func start(_ clip: EPUBMediaOverlayClip, reason: String, transitionID: Int) {
         logPlaybackEvent(
             "start",
@@ -296,12 +309,18 @@ final class MediaOverlayPlaybackController: ObservableObject {
                 self.addObservers(for: clip, reason: reason, transitionID: transitionID)
                 player.play()
                 self.state = .playing
+                self.applyPlaybackRateIfNeeded(
+                    player: player,
+                    shouldUpdateActiveRate: true,
+                    reason: "start[\(reason)]",
+                    transitionID: transitionID
+                )
                 self.logPlaybackEvent(
                     "player.playInvoked",
                     clip: clip,
                     reason: reason,
                     transitionID: transitionID,
-                    extra: "currentClipIndex=\(String(describing: self.currentClipIndex)) \(self.playerSnapshot())"
+                    extra: "currentClipIndex=\(String(describing: self.currentClipIndex)) playbackRate=\(formattedSeconds(self.playbackRate)) \(self.playerSnapshot())"
                 )
             }
         }
@@ -316,6 +335,7 @@ final class MediaOverlayPlaybackController: ObservableObject {
         }
 
         let item = AVPlayerItem(url: URL(fileURLWithPath: clip.audioPath))
+        item.audioTimePitchAlgorithm = .timeDomain
 
         if let player {
             logPlaybackEvent("preparedPlayer.replaceCurrentItem", clip: clip, transitionID: currentTransitionID, extra: playerSnapshot(player: player))
@@ -329,6 +349,32 @@ final class MediaOverlayPlaybackController: ObservableObject {
         self.player = player
         loadedAudioPath = clip.audioPath
         return player
+    }
+
+    private func applyPlaybackRateIfNeeded(
+        player: AVPlayer? = nil,
+        shouldUpdateActiveRate: Bool,
+        reason: String,
+        transitionID: Int? = nil
+    ) {
+        guard let player = player ?? self.player else {
+            return
+        }
+
+        player.currentItem?.audioTimePitchAlgorithm = .timeDomain
+
+        guard shouldUpdateActiveRate else {
+            return
+        }
+
+        player.rate = Float(playbackRate)
+        logPlaybackEvent(
+            "applyPlaybackRate",
+            clip: currentClip,
+            reason: reason,
+            transitionID: transitionID ?? currentTransitionID,
+            extra: "playbackRate=\(formattedSeconds(playbackRate)) \(playerSnapshot(player: player))"
+        )
     }
 
     private func isCurrentClip(_ clip: EPUBMediaOverlayClip) -> Bool {

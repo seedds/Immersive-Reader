@@ -482,6 +482,7 @@ private struct SettingsView: View {
     @SwiftUI.AppStorage(ReaderSettings.lineHeightKey) private var lineHeight = ReaderSettings.defaultLineHeight
     @SwiftUI.AppStorage(ReaderSettings.themeKey) private var themeRawValue = AppThemeOption.system.rawValue
     @SwiftUI.AppStorage(ReaderSettings.readAloudColorKey) private var readAloudColorRawValue = ReaderSettings.defaultReadAloudColorHex
+    @SwiftUI.AppStorage(ReaderSettings.playbackSpeedKey) private var playbackSpeed = ReaderSettings.defaultPlaybackSpeed
 
     var body: some View {
         NavigationStack {
@@ -520,6 +521,24 @@ private struct SettingsView: View {
                             ),
                             in: ReaderSettings.lineHeightRange,
                             step: ReaderSettings.lineHeightStep
+                        )
+                    }
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Text("Playback Speed")
+                            Spacer()
+                            Text(ReaderSettings.playbackSpeedText(playbackSpeed))
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Slider(
+                            value: Binding(
+                                get: { ReaderSettings.normalizedPlaybackSpeed(playbackSpeed) },
+                                set: { playbackSpeed = ReaderSettings.normalizedPlaybackSpeed($0) }
+                            ),
+                            in: ReaderSettings.playbackSpeedRange,
+                            step: ReaderSettings.playbackSpeedStep
                         )
                     }
 

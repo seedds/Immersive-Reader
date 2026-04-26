@@ -20,6 +20,7 @@ struct ReaderView: View {
     @SwiftUI.AppStorage(ReaderSettings.lineHeightKey) private var readerLineHeight = ReaderSettings.defaultLineHeight
     @SwiftUI.AppStorage(ReaderSettings.themeKey) private var readerThemeRawValue = AppThemeOption.system.rawValue
     @SwiftUI.AppStorage(ReaderSettings.readAloudColorKey) private var readerReadAloudColorRawValue = ReaderSettings.defaultReadAloudColorHex
+    @SwiftUI.AppStorage(ReaderSettings.playbackSpeedKey) private var readerPlaybackSpeed = ReaderSettings.defaultPlaybackSpeed
     @StateObject private var playback = MediaOverlayPlaybackController()
 
     let book: Book
@@ -33,6 +34,8 @@ struct ReaderView: View {
     @State private var programmaticPlaybackScrollState: ProgrammaticPlaybackScrollState?
     @State private var suppressPlaybackRetargetUntilClipChange = false
     @State private var readingOrderResourceHrefs: [String] = []
+    @State private var isPlaybackSpeedControlPresented = false
+    @State private var isReaderSettingsControlPresented = false
 
     var body: some View {
         Group {
@@ -43,50 +46,65 @@ struct ReaderView: View {
 
             case .ready(_, let navigator):
                 ZStack(alignment: .trailing) {
-                    VStack(spacing: 0) {
-                        EPUBNavigatorHost(
-                            navigator: navigator,
-                            onLocationDidChange: { locator in
-                                handleLocationDidChange(locator, navigator: navigator)
-                            },
-                            onViewportDidChange: {
-                                Task {
-                                    await handleViewportDidChange(navigator: navigator)
+                    EPUBNavigatorHost(
+                        navigator: navigator,
+                        onLocationDidChange: { locator in
+                            handleLocationDidChange(locator, navigator: navigator)
+                        },
+                        onViewportDidChange: {
+                            Task {
+                                await handleViewportDidChange(navigator: navigator)
+                            }
+                        },
+                        onAudioTap: { reference in
+                            Task {
+                                await playFromTappedReference(reference, navigator: navigator)
+                            }
+                        }
+                    )
+                    .ignoresSafeArea(edges: .bottom)
+
+                    if isBottomControlPresented {
+                        Color.black.opacity(0.001)
+                            .ignoresSafeArea()
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                dismissBottomControls()
+                            }
+                    }
+
+                    if !playback.clips.isEmpty {
+                        MediaOverlayPlaybackBar(
+                            playback: playback,
+                            playbackSpeed: $readerPlaybackSpeed,
+                            fontSize: $readerFontSize,
+                            lineHeight: $readerLineHeight,
+                            isSpeedControlPresented: $isPlaybackSpeedControlPresented,
+                            isReaderSettingsControlPresented: $isReaderSettingsControlPresented,
+                            toggleSpeedControl: togglePlaybackSpeedControl,
+                            toggleReaderSettingsControl: toggleReaderSettingsControl,
+                            playPause: {
+                                if playback.state.isPlaying {
+                                    playback.pause(reason: "playPauseButton.pause")
+                                    applyCurrentClipDecoration(with: navigator)
+                                } else {
+                                    Task {
+                                        await startPlaybackFromVisibleOrForwardPosition(with: navigator)
+                                    }
                                 }
                             },
-                            onAudioTap: { reference in
-                                Task {
-                                    await playFromTappedReference(reference, navigator: navigator)
-                                }
+                            previous: {
+                                suppressPlaybackRetargetUntilClipChange = false
+                                playback.previousClip(reason: "playbackBar.previousButton")
+                                handleCurrentClipChange(oldIndex: nil, newIndex: playback.currentClipIndex, navigator: navigator)
+                            },
+                            next: {
+                                suppressPlaybackRetargetUntilClipChange = false
+                                playback.nextClip(reason: "playbackBar.nextButton")
+                                handleCurrentClipChange(oldIndex: nil, newIndex: playback.currentClipIndex, navigator: navigator)
                             }
                         )
-                        .ignoresSafeArea(edges: .bottom)
-
-                        if !playback.clips.isEmpty {
-                            MediaOverlayPlaybackBar(
-                                playback: playback,
-                                playPause: {
-                                    if playback.state.isPlaying {
-                                        playback.pause(reason: "playPauseButton.pause")
-                                        applyCurrentClipDecoration(with: navigator)
-                                    } else {
-                                        Task {
-                                            await startPlaybackFromVisibleOrForwardPosition(with: navigator)
-                                        }
-                                    }
-                                },
-                                previous: {
-                                    suppressPlaybackRetargetUntilClipChange = false
-                                    playback.previousClip(reason: "playbackBar.previousButton")
-                                    handleCurrentClipChange(oldIndex: nil, newIndex: playback.currentClipIndex, navigator: navigator)
-                                },
-                                next: {
-                                    suppressPlaybackRetargetUntilClipChange = false
-                                    playback.nextClip(reason: "playbackBar.nextButton")
-                                    handleCurrentClipChange(oldIndex: nil, newIndex: playback.currentClipIndex, navigator: navigator)
-                                }
-                            )
-                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                     }
 
                     if isChapterDrawerPresented {
@@ -134,6 +152,9 @@ struct ReaderView: View {
                 .onChange(of: readerReadAloudColorRawValue) { _, _ in
                     applyCurrentClipDecoration(with: navigator)
                 }
+                .onChange(of: readerPlaybackSpeed) { _, newValue in
+                    playback.setPlaybackRate(newValue)
+                }
                 .onChange(of: colorScheme) { _, _ in
                     if ReaderSettings.appTheme(from: readerThemeRawValue) == .system {
                         applyReaderPreferences(to: navigator)
@@ -155,6 +176,7 @@ struct ReaderView: View {
             if case .ready = state {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
+                        dismissBottomControls()
                         withAnimation(.easeInOut(duration: 0.2)) {
                             isChapterDrawerPresented.toggle()
                         }
@@ -171,6 +193,8 @@ struct ReaderView: View {
         .onDisappear {
             logReaderEvent("readerView.onDisappear")
             persistLastPlayedClip()
+            isPlaybackSpeedControlPresented = false
+            isReaderSettingsControlPresented = false
             playback.stop(reason: "readerView.onDisappear")
         }
     }
@@ -183,6 +207,7 @@ struct ReaderView: View {
 
         book.lastOpenedAt = Date()
         try? modelContext.save()
+        playback.setPlaybackRate(readerPlaybackSpeed)
         playback.load(from: book.mediaOverlayJSONPath)
 
         do {
@@ -223,6 +248,37 @@ struct ReaderView: View {
     @MainActor
     private func applyReaderPreferences(to navigator: EPUBNavigatorViewController) {
         navigator.submitPreferences(readerPreferences())
+    }
+
+    private var isBottomControlPresented: Bool {
+        isPlaybackSpeedControlPresented || isReaderSettingsControlPresented
+    }
+
+    private func dismissBottomControls() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            isPlaybackSpeedControlPresented = false
+            isReaderSettingsControlPresented = false
+        }
+    }
+
+    private func togglePlaybackSpeedControl() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            let shouldPresent = !isPlaybackSpeedControlPresented
+            isPlaybackSpeedControlPresented = shouldPresent
+            if shouldPresent {
+                isReaderSettingsControlPresented = false
+            }
+        }
+    }
+
+    private func toggleReaderSettingsControl() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            let shouldPresent = !isReaderSettingsControlPresented
+            isReaderSettingsControlPresented = shouldPresent
+            if shouldPresent {
+                isPlaybackSpeedControlPresented = false
+            }
+        }
     }
 
     private func loadChapterItems(from publication: Publication) async -> [ChapterListItem] {
@@ -1295,19 +1351,52 @@ private struct ChapterDrawer: View {
 
 private struct MediaOverlayPlaybackBar: View {
     @ObservedObject var playback: MediaOverlayPlaybackController
+    @Binding var playbackSpeed: Double
+    @Binding var fontSize: Double
+    @Binding var lineHeight: Double
+    @Binding var isSpeedControlPresented: Bool
+    @Binding var isReaderSettingsControlPresented: Bool
+    let toggleSpeedControl: () -> Void
+    let toggleReaderSettingsControl: () -> Void
     let playPause: () -> Void
     let previous: () -> Void
     let next: () -> Void
 
     var body: some View {
-        HStack {
-            Spacer()
+        VStack(alignment: .leading, spacing: 8) {
+            if isSpeedControlPresented || isReaderSettingsControlPresented {
+                HStack(alignment: .bottom, spacing: 16) {
+                    if isSpeedControlPresented {
+                        PlaybackSpeedControlPanel(playbackSpeed: $playbackSpeed)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
 
-            HStack(spacing: 24) {
+                    Spacer(minLength: 0)
+
+                    if isReaderSettingsControlPresented {
+                        ReaderTypographyControlPanel(fontSize: $fontSize, lineHeight: $lineHeight)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                }
+                .padding(.horizontal, 16)
+            }
+
+            HStack(spacing: 0) {
+                Button(action: toggleSpeedControl) {
+                    Text(ReaderSettings.playbackSpeedText(playbackSpeed))
+                        .fontWeight(.medium)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color(uiColor: .secondarySystemFill), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity)
+
                 Button(action: previous) {
                     Image(systemName: "backward.fill")
                 }
                 .disabled(playback.currentClipIndex == nil || playback.currentClipIndex == 0)
+                .frame(maxWidth: .infinity)
 
                 Button(action: playPause) {
                     Image(systemName: playback.state.isPlaying ? "pause.fill" : "play.fill")
@@ -1316,18 +1405,29 @@ private struct MediaOverlayPlaybackBar: View {
                         .foregroundStyle(.white)
                 }
                 .buttonStyle(.plain)
+                .frame(maxWidth: .infinity)
 
                 Button(action: next) {
                     Image(systemName: "forward.fill")
                 }
                 .disabled(!canGoForward)
-            }
+                .frame(maxWidth: .infinity)
 
-            Spacer()
+                Button(action: toggleReaderSettingsControl) {
+                    Image(systemName: "textformat.size")
+                        .font(.body.weight(.medium))
+                        .frame(width: 36, height: 36)
+                        .background(Color(uiColor: .secondarySystemFill), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(.regularMaterial)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(.regularMaterial)
+        .animation(.easeInOut(duration: 0.2), value: isSpeedControlPresented)
+        .animation(.easeInOut(duration: 0.2), value: isReaderSettingsControlPresented)
     }
 
     private var canGoForward: Bool {
@@ -1335,6 +1435,103 @@ private struct MediaOverlayPlaybackBar: View {
             return false
         }
         return currentClipIndex < playback.clips.count - 1
+    }
+}
+
+private struct PlaybackSpeedControlPanel: View {
+    @Binding var playbackSpeed: Double
+
+    var body: some View {
+        ReaderControlPanel(width: 240) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("Playback Speed")
+                        .font(.subheadline.weight(.semibold))
+
+                    Spacer(minLength: 12)
+
+                    Text(ReaderSettings.playbackSpeedText(playbackSpeed))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+
+                Slider(
+                    value: Binding(
+                        get: { ReaderSettings.normalizedPlaybackSpeed(playbackSpeed) },
+                        set: { playbackSpeed = ReaderSettings.normalizedPlaybackSpeed($0) }
+                    ),
+                    in: ReaderSettings.playbackSpeedRange,
+                    step: ReaderSettings.playbackSpeedStep
+                )
+            }
+        }
+    }
+}
+
+private struct ReaderTypographyControlPanel: View {
+    @Binding var fontSize: Double
+    @Binding var lineHeight: Double
+
+    var body: some View {
+        ReaderControlPanel(width: 260) {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Reader Settings")
+                    .font(.subheadline.weight(.semibold))
+
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Text("Font Size")
+                        Spacer()
+                        Text(fontSize.formatted(.number.precision(.fractionLength(1))))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Slider(
+                        value: Binding(
+                            get: { ReaderSettings.normalizedFontSize(fontSize) },
+                            set: { fontSize = ReaderSettings.normalizedFontSize($0) }
+                        ),
+                        in: ReaderSettings.fontSizeRange,
+                        step: ReaderSettings.fontSizeStep
+                    )
+                }
+
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Text("Line Height")
+                        Spacer()
+                        Text(lineHeight.formatted(.number.precision(.fractionLength(1))))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Slider(
+                        value: Binding(
+                            get: { ReaderSettings.normalizedLineHeight(lineHeight) },
+                            set: { lineHeight = ReaderSettings.normalizedLineHeight($0) }
+                        ),
+                        in: ReaderSettings.lineHeightRange,
+                        step: ReaderSettings.lineHeightStep
+                    )
+                }
+            }
+        }
+    }
+}
+
+private struct ReaderControlPanel<Content: View>: View {
+    let width: CGFloat
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        content
+            .padding(14)
+            .frame(width: width)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(.black.opacity(0.08), lineWidth: 1)
+            }
+            .shadow(color: .black.opacity(0.12), radius: 12, y: 4)
     }
 }
 
