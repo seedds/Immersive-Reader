@@ -20,6 +20,10 @@ final class Book {
     var language: String?
     var metadataIdentifier: String?
     var lastLocatorJSON: String?
+    var lastPlayedTextResourceHref: String?
+    var lastPlayedFragmentID: String?
+    var lastPlayedClipBegin: Double?
+    var lastPlayedClipEnd: Double?
     var mediaOverlayJSONPath: String?
     var mediaOverlayActiveClass: String?
     var mediaOverlayDuration: Double?
@@ -40,6 +44,10 @@ final class Book {
         language: String? = nil,
         metadataIdentifier: String? = nil,
         lastLocatorJSON: String? = nil,
+        lastPlayedTextResourceHref: String? = nil,
+        lastPlayedFragmentID: String? = nil,
+        lastPlayedClipBegin: Double? = nil,
+        lastPlayedClipEnd: Double? = nil,
         mediaOverlayJSONPath: String? = nil,
         mediaOverlayActiveClass: String? = nil,
         mediaOverlayDuration: Double? = nil,
@@ -59,6 +67,10 @@ final class Book {
         self.language = language
         self.metadataIdentifier = metadataIdentifier
         self.lastLocatorJSON = lastLocatorJSON
+        self.lastPlayedTextResourceHref = lastPlayedTextResourceHref
+        self.lastPlayedFragmentID = lastPlayedFragmentID
+        self.lastPlayedClipBegin = lastPlayedClipBegin
+        self.lastPlayedClipEnd = lastPlayedClipEnd
         self.mediaOverlayJSONPath = mediaOverlayJSONPath
         self.mediaOverlayActiveClass = mediaOverlayActiveClass
         self.mediaOverlayDuration = mediaOverlayDuration

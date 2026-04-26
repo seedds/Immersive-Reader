@@ -13,9 +13,13 @@ import UIKit
 import WebKit
 
 struct ReaderView: View {
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.modelContext) private var modelContext
     @SwiftUI.AppStorage(ReaderSettings.fontSizeKey) private var readerFontSize = ReaderSettings.defaultFontSize
     @SwiftUI.AppStorage(ReaderSettings.fontFamilyKey) private var readerFontFamilyRawValue = ""
+    @SwiftUI.AppStorage(ReaderSettings.lineHeightKey) private var readerLineHeight = ReaderSettings.defaultLineHeight
+    @SwiftUI.AppStorage(ReaderSettings.themeKey) private var readerThemeRawValue = AppThemeOption.system.rawValue
+    @SwiftUI.AppStorage(ReaderSettings.readAloudColorKey) private var readerReadAloudColorRawValue = ReaderSettings.defaultReadAloudColorHex
     @StateObject private var playback = MediaOverlayPlaybackController()
 
     let book: Book
@@ -121,6 +125,20 @@ struct ReaderView: View {
                 .onChange(of: readerFontFamilyRawValue) { _, _ in
                     applyReaderPreferences(to: navigator)
                 }
+                .onChange(of: readerLineHeight) { _, _ in
+                    applyReaderPreferences(to: navigator)
+                }
+                .onChange(of: readerThemeRawValue) { _, _ in
+                    applyReaderPreferences(to: navigator)
+                }
+                .onChange(of: readerReadAloudColorRawValue) { _, _ in
+                    applyCurrentClipDecoration(with: navigator)
+                }
+                .onChange(of: colorScheme) { _, _ in
+                    if ReaderSettings.appTheme(from: readerThemeRawValue) == .system {
+                        applyReaderPreferences(to: navigator)
+                    }
+                }
 
             case .failed(let message):
                 ContentUnavailableView(
@@ -152,6 +170,7 @@ struct ReaderView: View {
         }
         .onDisappear {
             logReaderEvent("readerView.onDisappear")
+            persistLastPlayedClip()
             playback.stop(reason: "readerView.onDisappear")
         }
     }
@@ -165,6 +184,7 @@ struct ReaderView: View {
         book.lastOpenedAt = Date()
         try? modelContext.save()
         playback.load(from: book.mediaOverlayJSONPath)
+        restoreLastPlayedClipSelectionIfAvailable()
 
         do {
             let publication = try await ReadiumBookService.shared.openPublication(for: book)
@@ -193,8 +213,10 @@ struct ReaderView: View {
         EPUBPreferences(
             fontFamily: ReaderSettings.fontFamily(from: readerFontFamilyRawValue),
             fontSize: ReaderSettings.normalizedFontSize(readerFontSize),
+            lineHeight: ReaderSettings.normalizedLineHeight(readerLineHeight),
             publisherStyles: false,
-            scroll: true
+            scroll: true,
+            theme: ReaderSettings.appTheme(from: readerThemeRawValue).readiumTheme(for: colorScheme)
         )
     }
 
@@ -220,6 +242,56 @@ struct ReaderView: View {
         book.lastLocatorJSON = locator.jsonString
         book.lastOpenedAt = Date()
         try? modelContext.save()
+    }
+
+    @MainActor
+    private func persistLastPlayedClip() {
+        guard let clip = playback.currentClip else {
+            book.lastPlayedTextResourceHref = nil
+            book.lastPlayedFragmentID = nil
+            book.lastPlayedClipBegin = nil
+            book.lastPlayedClipEnd = nil
+            try? modelContext.save()
+            return
+        }
+
+        book.lastPlayedTextResourceHref = normalizedResourceHref(for: clip.textResourceHref)
+        book.lastPlayedFragmentID = clip.fragmentID
+        book.lastPlayedClipBegin = clip.clipBegin
+        book.lastPlayedClipEnd = clip.clipEnd
+        try? modelContext.save()
+    }
+
+    @MainActor
+    private func restoreLastPlayedClipSelectionIfAvailable() {
+        guard let restoredIndex = restoredLastPlayedClipIndex() else {
+            return
+        }
+
+        playback.selectClip(at: restoredIndex, autoplay: false, reason: "restoreLastPlayedClip")
+    }
+
+    private func restoredLastPlayedClipIndex() -> Int? {
+        guard let storedResourceHref = book.lastPlayedTextResourceHref,
+              let storedClipBegin = book.lastPlayedClipBegin
+        else {
+            return nil
+        }
+
+        let normalizedStoredResourceHref = normalizedResourceHref(for: storedResourceHref)
+        if let exactMatch = playback.clips.firstIndex(where: { clip in
+            normalizedResourceHref(for: clip.textResourceHref) == normalizedStoredResourceHref &&
+            clip.fragmentID == book.lastPlayedFragmentID &&
+            clip.clipBegin == storedClipBegin &&
+            clip.clipEnd == book.lastPlayedClipEnd
+        }) {
+            return exactMatch
+        }
+
+        return playback.clips.firstIndex(where: { clip in
+            normalizedResourceHref(for: clip.textResourceHref) == normalizedStoredResourceHref &&
+            clip.fragmentID == book.lastPlayedFragmentID
+        })
     }
 
     @MainActor
@@ -615,6 +687,7 @@ struct ReaderView: View {
             extra: "oldIndex=\(String(describing: oldIndex)) newIndex=\(String(describing: newIndex)) suppressNextClipNavigation=\(suppressNextClipNavigation) suppressNextTapPlaybackNavigation=\(suppressNextTapPlaybackNavigation) suppressRetargetUntilClipChange=\(suppressPlaybackRetargetUntilClipChange) state=\(String(describing: playback.state))"
         )
         applyCurrentClipDecoration(with: navigator)
+        persistLastPlayedClip()
 
         if oldIndex != newIndex {
             suppressPlaybackRetargetUntilClipChange = false
@@ -1035,7 +1108,10 @@ struct ReaderView: View {
                 Decoration(
                     id: "media-overlay-active",
                     locator: locator,
-                    style: .highlight(tint: .systemGreen, isActive: true)
+                    style: .highlight(
+                        tint: ReaderSettings.uiColor(from: readerReadAloudColorRawValue),
+                        isActive: true
+                    )
                 ),
             ],
             in: mediaOverlayDecorationGroup
