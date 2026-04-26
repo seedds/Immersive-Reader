@@ -67,7 +67,7 @@ final class MediaOverlayPlaybackController: ObservableObject {
             clips = manifest.documents.flatMap(\.clips).filter { clip in
                 FileManager.default.fileExists(atPath: clip.audioPath)
             }
-            currentClipIndex = clips.isEmpty ? nil : 0
+            currentClipIndex = nil
             state = clips.isEmpty ? .unavailable : .ready
             logPlaybackEvent(
                 "load.completed",

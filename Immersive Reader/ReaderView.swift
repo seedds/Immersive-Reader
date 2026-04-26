@@ -184,7 +184,6 @@ struct ReaderView: View {
         book.lastOpenedAt = Date()
         try? modelContext.save()
         playback.load(from: book.mediaOverlayJSONPath)
-        restoreLastPlayedClipSelectionIfAvailable()
 
         do {
             let publication = try await ReadiumBookService.shared.openPublication(for: book)
@@ -204,6 +203,7 @@ struct ReaderView: View {
             self.chapterItems = chapterItems
             self.readingOrderResourceHrefs = publication.readingOrder.map { normalizedResourceHref(for: $0.href) }
             state = .ready(publication: publication, navigator: navigator)
+            restoreLastPlayedClipSelectionIfAvailable(with: navigator)
         } catch {
             state = .failed(error.localizedDescription)
         }
@@ -263,12 +263,16 @@ struct ReaderView: View {
     }
 
     @MainActor
-    private func restoreLastPlayedClipSelectionIfAvailable() {
+    private func restoreLastPlayedClipSelectionIfAvailable(with navigator: EPUBNavigatorViewController) {
         guard let restoredIndex = restoredLastPlayedClipIndex() else {
+            navigator.apply(decorations: [], in: mediaOverlayDecorationGroup)
             return
         }
 
+        suppressNextClipNavigation = true
         playback.selectClip(at: restoredIndex, autoplay: false, reason: "restoreLastPlayedClip")
+        navigateToCurrentClip(with: navigator)
+        applyCurrentClipDecoration(with: navigator)
     }
 
     private func restoredLastPlayedClipIndex() -> Int? {

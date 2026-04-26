@@ -307,7 +307,6 @@ private struct SettingsView: View {
     @SwiftUI.AppStorage(ReaderSettings.lineHeightKey) private var lineHeight = ReaderSettings.defaultLineHeight
     @SwiftUI.AppStorage(ReaderSettings.themeKey) private var themeRawValue = AppThemeOption.system.rawValue
     @SwiftUI.AppStorage(ReaderSettings.readAloudColorKey) private var readAloudColorRawValue = ReaderSettings.defaultReadAloudColorHex
-    @State private var isReadAloudColorEditorPresented = false
 
     var body: some View {
         NavigationStack {
@@ -382,8 +381,14 @@ private struct SettingsView: View {
                         }
                     }
 
-                    Button {
-                        isReadAloudColorEditorPresented = true
+                    NavigationLink {
+                        ReadAloudColorEditor(colorHex: $readAloudColorRawValue)
+                            .padding(.horizontal, 16)
+                            .padding(.top, 12)
+                            .padding(.bottom, 16)
+                            .navigationTitle("Highlight Color")
+                            .navigationBarTitleDisplayMode(.inline)
+                            .toolbar(.hidden, for: .tabBar)
                     } label: {
                         HStack(spacing: 12) {
                             Text("Highlight Color")
@@ -397,14 +402,9 @@ private struct SettingsView: View {
                                     Circle()
                                         .stroke(.black.opacity(0.08), lineWidth: 1)
                                 }
-
-                            Image(systemName: "chevron.right")
-                                .font(.footnote.weight(.semibold))
-                                .foregroundStyle(.tertiary)
                         }
                         .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
                 }
 
                 Section("Preview") {
@@ -430,15 +430,6 @@ private struct SettingsView: View {
                     .preferredColorScheme(selectedAppTheme.preferredColorScheme)
                 }
             }
-        }
-        .navigationDestination(isPresented: $isReadAloudColorEditorPresented) {
-            ReadAloudColorEditor(colorHex: $readAloudColorRawValue)
-                .padding(.horizontal, 16)
-                .padding(.top, 12)
-                .padding(.bottom, 16)
-                .navigationTitle("Highlight Color")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar(.hidden, for: .tabBar)
         }
     }
 
