@@ -318,13 +318,18 @@ struct ReaderView: View {
     private func startPlaybackFromVisibleOrForwardPosition(with navigator: EPUBNavigatorViewController) async {
         suppressPlaybackRetargetUntilClipChange = false
 
-        if await currentClipIsPartiallyVisible(with: navigator) {
+        let currentClipVisibility = await currentClipPlaybackVisibility(with: navigator)
+        if currentClipVisibility != .notVisible {
+            let shouldAlignToTop = currentClipVisibility == .visibleNeedsTopAlignment
             logReaderEvent(
                 "startPlaybackFromVisibleOrForwardPosition.target",
                 clip: playback.currentClip,
-                extra: "target=currentVisibleClip currentClipIndex=\(String(describing: playback.currentClipIndex))"
+                extra: "target=currentVisibleClip shouldAlignToTop=\(shouldAlignToTop) currentClipIndex=\(String(describing: playback.currentClipIndex))"
             )
             playback.play(reason: "startPlaybackFromVisibleOrForwardPosition.resumeVisibleCurrentClip")
+            if shouldAlignToTop {
+                await alignCurrentClipTopForPlayback(with: navigator)
+            }
             applyCurrentClipDecoration(with: navigator)
             return
         }
@@ -337,7 +342,7 @@ struct ReaderView: View {
         logReaderEvent(
             "startPlaybackFromVisibleOrForwardPosition.target",
             clip: playback.currentClip,
-            extra: "targetClipIndex=\(target.clipIndex) shouldNavigate=\(target.shouldNavigate) currentClipIndex=\(String(describing: playback.currentClipIndex))"
+            extra: "targetClipIndex=\(target.clipIndex) shouldNavigate=\(target.shouldNavigate) shouldAlignToTop=\(target.shouldAlignToTop) currentClipIndex=\(String(describing: playback.currentClipIndex))"
         )
         if playback.currentClipIndex != target.clipIndex {
             if !target.shouldNavigate {
@@ -346,6 +351,8 @@ struct ReaderView: View {
             playback.selectClip(at: target.clipIndex, autoplay: true, reason: "startPlaybackFromVisibleOrForwardPosition")
             if target.shouldNavigate {
                 navigateToCurrentClip(with: navigator)
+            } else if target.shouldAlignToTop {
+                await alignCurrentClipTopForPlayback(with: navigator)
             }
             return
         }
@@ -353,53 +360,130 @@ struct ReaderView: View {
         playback.play(reason: "startPlaybackFromVisibleOrForwardPosition.resumeCurrentClip")
         if target.shouldNavigate {
             navigateToCurrentClip(with: navigator)
+        } else if target.shouldAlignToTop {
+            await alignCurrentClipTopForPlayback(with: navigator)
+            applyCurrentClipDecoration(with: navigator)
         } else {
             applyCurrentClipDecoration(with: navigator)
         }
     }
 
     @MainActor
-    private func currentClipIsPartiallyVisible(with navigator: EPUBNavigatorViewController) async -> Bool {
+    private func currentClipPlaybackVisibility(with navigator: EPUBNavigatorViewController) async -> FragmentPlaybackVisibility {
         guard let currentClip = playback.currentClip,
               let fragmentID = currentClip.fragmentID,
               !fragmentID.isEmpty,
               let visibleLocator = await navigator.firstVisibleElementLocator()
         else {
-            return false
+            return .notVisible
         }
 
         guard normalizedResourceHref(for: currentClip.textResourceHref) == normalizedResourceHref(for: visibleLocator.href.string) else {
-            return false
+            return .notVisible
         }
+
+        let visibility = await fragmentPlaybackVisibility(for: fragmentID, navigator: navigator)
+        logReaderEvent("currentClipPlaybackVisibility", clip: currentClip, extra: "visibility=\(visibility)")
+        return visibility
+    }
+
+    @MainActor
+    private func fragmentPlaybackVisibility(for fragmentID: String, navigator: EPUBNavigatorViewController) async -> FragmentPlaybackVisibility {
+        let fragmentIDLiteral = javaScriptStringLiteral(fragmentID)
+        let script = """
+        (() => {
+          const element = document.getElementById(\(fragmentIDLiteral));
+          if (!element) {
+            return 'notVisible';
+          }
+
+          const style = window.getComputedStyle(element);
+          if (style.display === 'none' || style.visibility === 'hidden') {
+            return 'notVisible';
+          }
+
+          const rect = element.getBoundingClientRect();
+          if (!(rect.bottom > 0 && rect.top < window.innerHeight)) {
+            return 'notVisible';
+          }
+
+          const topThreshold = window.innerHeight * 0.05;
+          return rect.top < topThreshold ? 'visibleNeedsTopAlignment' : 'visible';
+        })();
+        """
+
+        let result = await navigator.evaluateJavaScript(script)
+        guard case .success(let value) = result,
+              let visibility = value as? String
+        else {
+            logReaderEvent("fragmentPlaybackVisibility.failed", extra: "fragmentID=\(fragmentID)")
+            return .notVisible
+        }
+
+        switch visibility {
+        case "visible":
+            return .visible
+        case "visibleNeedsTopAlignment":
+            return .visibleNeedsTopAlignment
+        default:
+            return .notVisible
+        }
+    }
+
+    @MainActor
+    private func alignCurrentClipTopForPlayback(with navigator: EPUBNavigatorViewController) async {
+        guard let currentClip = playback.currentClip,
+              let fragmentID = currentClip.fragmentID,
+              !fragmentID.isEmpty
+        else {
+            return
+        }
+
+        let action = await alignFragmentTopForPlayback(fragmentID: fragmentID, navigator: navigator)
+        logReaderEvent("alignCurrentClipTopForPlayback", clip: currentClip, extra: "action=\(action)")
+    }
+
+    @MainActor
+    private func alignFragmentTopForPlayback(fragmentID: String, navigator: EPUBNavigatorViewController) async -> String {
 
         let fragmentIDLiteral = javaScriptStringLiteral(fragmentID)
         let script = """
         (() => {
           const element = document.getElementById(\(fragmentIDLiteral));
           if (!element) {
-            return false;
+            return 'missing';
           }
 
           const style = window.getComputedStyle(element);
           if (style.display === 'none' || style.visibility === 'hidden') {
-            return false;
+            return 'missing';
           }
 
           const rect = element.getBoundingClientRect();
-          return rect.bottom > 0 && rect.top < window.innerHeight;
+          if (!(rect.bottom > 0 && rect.top < window.innerHeight)) {
+            return 'notVisible';
+          }
+
+          const targetTop = window.innerHeight * 0.05;
+          const delta = rect.top - targetTop;
+          if (Math.abs(delta) <= 2) {
+            return 'noop';
+          }
+
+          window.scrollBy({ top: delta, behavior: 'smooth' });
+          return 'scrolled';
         })();
         """
 
         let result = await navigator.evaluateJavaScript(script)
         guard case .success(let value) = result,
-              let isVisible = value as? Bool
+              let action = value as? String
         else {
-            logReaderEvent("currentClipIsPartiallyVisible.failed", clip: currentClip, extra: "fragmentID=\(fragmentID)")
-            return false
+            logReaderEvent("alignFragmentTopForPlayback.failed", extra: "fragmentID=\(fragmentID)")
+            return "failed"
         }
 
-        logReaderEvent("currentClipIsPartiallyVisible", clip: currentClip, extra: "isVisible=\(isVisible)")
-        return isVisible
+        return action
     }
 
     @MainActor
@@ -721,16 +805,16 @@ struct ReaderView: View {
         )
 
         if !playableIDs.isEmpty,
-           let visibleFragmentID = await firstPlayableFragmentIDInViewport(
+           let visibleTarget = await firstPlayableFragmentIDInViewport(
             fragmentIDs: playableIDs,
             navigator: navigator
            ),
-           let visibleClipIndex = exactClipIndex(for: EPUBReference(
+            let visibleClipIndex = exactClipIndex(for: EPUBReference(
             resourceHref: visibleResourceHref,
-            fragmentID: visibleFragmentID
-           )) {
-            logReaderEvent("resolvedPlaybackStartTarget.result", reference: EPUBReference(resourceHref: visibleResourceHref, fragmentID: visibleFragmentID), extra: "target=visibleClipIndex shouldNavigate=false clipIndex=\(visibleClipIndex)")
-            return PlaybackStartTarget(clipIndex: visibleClipIndex, shouldNavigate: false)
+            fragmentID: visibleTarget.fragmentID
+            )) {
+            logReaderEvent("resolvedPlaybackStartTarget.result", reference: EPUBReference(resourceHref: visibleResourceHref, fragmentID: visibleTarget.fragmentID), extra: "target=visibleClipIndex shouldNavigate=false shouldAlignToTop=\(visibleTarget.shouldAlignToTop) clipIndex=\(visibleClipIndex)")
+            return PlaybackStartTarget(clipIndex: visibleClipIndex, shouldNavigate: false, shouldAlignToTop: visibleTarget.shouldAlignToTop)
         }
 
         if !playableIDs.isEmpty,
@@ -743,7 +827,7 @@ struct ReaderView: View {
             fragmentID: beforeFragmentID
            )) {
             logReaderEvent("resolvedPlaybackStartTarget.result", reference: EPUBReference(resourceHref: visibleResourceHref, fragmentID: beforeFragmentID), extra: "target=beforeClipIndex shouldNavigate=true clipIndex=\(beforeClipIndex)")
-            return PlaybackStartTarget(clipIndex: beforeClipIndex, shouldNavigate: true)
+            return PlaybackStartTarget(clipIndex: beforeClipIndex, shouldNavigate: true, shouldAlignToTop: false)
         }
 
         if !playableIDs.isEmpty,
@@ -756,12 +840,12 @@ struct ReaderView: View {
             fragmentID: forwardFragmentID
            )) {
             logReaderEvent("resolvedPlaybackStartTarget.result", reference: EPUBReference(resourceHref: visibleResourceHref, fragmentID: forwardFragmentID), extra: "target=forwardClipIndex shouldNavigate=true clipIndex=\(forwardClipIndex)")
-            return PlaybackStartTarget(clipIndex: forwardClipIndex, shouldNavigate: true)
+            return PlaybackStartTarget(clipIndex: forwardClipIndex, shouldNavigate: true, shouldAlignToTop: false)
         }
 
         if let laterClipIndex = firstClipIndex(afterResourceHref: visibleResourceHref) {
             logReaderEvent("resolvedPlaybackStartTarget.result", extra: "target=laterClipIndex shouldNavigate=true clipIndex=\(laterClipIndex) visibleResourceHref=\(visibleResourceHref)")
-            return PlaybackStartTarget(clipIndex: laterClipIndex, shouldNavigate: true)
+            return PlaybackStartTarget(clipIndex: laterClipIndex, shouldNavigate: true, shouldAlignToTop: false)
         }
 
         logReaderEvent("resolvedPlaybackStartTarget.noTarget", extra: "visibleResourceHref=\(visibleResourceHref)")
@@ -772,11 +856,12 @@ struct ReaderView: View {
     private func firstPlayableFragmentIDInViewport(
         fragmentIDs: [String],
         navigator: EPUBNavigatorViewController
-    ) async -> String? {
+    ) async -> VisibleFragmentTarget? {
         let fragmentIDsLiteral = javaScriptArrayLiteral(fragmentIDs)
         let script = """
         (() => {
           const fragmentIDs = \(fragmentIDsLiteral);
+          const topThreshold = window.innerHeight * 0.05;
 
           const topIntersectingViewport = element => {
             if (!element) {
@@ -789,35 +874,49 @@ struct ReaderView: View {
             }
 
             const rect = element.getBoundingClientRect();
-            return rect.bottom > 0 && rect.top < window.innerHeight ? rect.top : null;
+            if (!(rect.bottom > 0 && rect.top < window.innerHeight)) {
+              return null;
+            }
+
+            return {
+              top: rect.top,
+              needsTopAlignment: rect.top < topThreshold
+            };
           };
 
           let firstVisible = null;
           for (const fragmentID of fragmentIDs) {
             const element = document.getElementById(fragmentID);
-            const top = topIntersectingViewport(element);
-            if (top === null) {
+            const visiblePosition = topIntersectingViewport(element);
+            if (visiblePosition === null) {
               continue;
             }
 
-            if (!firstVisible || top < firstVisible.top) {
-              firstVisible = { top, fragmentID };
+            if (!firstVisible || visiblePosition.top < firstVisible.top) {
+              firstVisible = {
+                top: visiblePosition.top,
+                fragmentID,
+                needsTopAlignment: visiblePosition.needsTopAlignment
+              };
             }
           }
 
-          return firstVisible?.fragmentID ?? null;
+          return firstVisible ? [firstVisible.fragmentID, firstVisible.needsTopAlignment] : null;
         })();
         """
 
         let result = await navigator.evaluateJavaScript(script)
         guard case .success(let value) = result,
-              let fragmentID = value as? String,
+              let payload = value as? [Any],
+              payload.count == 2,
+              let fragmentID = payload[0] as? String,
               !fragmentID.isEmpty
         else {
             return nil
         }
 
-        return fragmentID
+        let shouldAlignToTop = payload[1] as? Bool ?? false
+        return VisibleFragmentTarget(fragmentID: fragmentID, shouldAlignToTop: shouldAlignToTop)
     }
 
     @MainActor
@@ -993,9 +1092,32 @@ private struct ProgrammaticPlaybackScrollState {
     let target: EPUBReference
 }
 
+private enum FragmentPlaybackVisibility: CustomStringConvertible, Equatable {
+    case notVisible
+    case visible
+    case visibleNeedsTopAlignment
+
+    var description: String {
+        switch self {
+        case .notVisible:
+            return "notVisible"
+        case .visible:
+            return "visible"
+        case .visibleNeedsTopAlignment:
+            return "visibleNeedsTopAlignment"
+        }
+    }
+}
+
+private struct VisibleFragmentTarget {
+    let fragmentID: String
+    let shouldAlignToTop: Bool
+}
+
 private struct PlaybackStartTarget {
     let clipIndex: Int
     let shouldNavigate: Bool
+    let shouldAlignToTop: Bool
 }
 
 private func logReaderEvent(
