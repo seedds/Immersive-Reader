@@ -44,11 +44,6 @@ final class MediaOverlayPlaybackController: ObservableObject {
         return clips[currentClipIndex]
     }
 
-    var currentClipNumberText: String {
-        guard let currentClipIndex else { return "0 of \(clips.count)" }
-        return "\(currentClipIndex + 1) of \(clips.count)"
-    }
-
     func load(from jsonPath: String?) {
         logPlaybackEvent("load.begin", extra: "jsonPath=\(jsonPath ?? "nil")")
         stop(reason: "load")

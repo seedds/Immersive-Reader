@@ -1300,31 +1300,27 @@ private struct MediaOverlayPlaybackBar: View {
     let next: () -> Void
 
     var body: some View {
-        HStack(spacing: 18) {
-            Button(action: previous) {
-                Image(systemName: "backward.fill")
-            }
-            .disabled(playback.currentClipIndex == nil || playback.currentClipIndex == 0)
+        HStack {
+            Spacer()
 
-            Button(action: playPause) {
-                Image(systemName: playback.state.isPlaying ? "pause.fill" : "play.fill")
-                    .frame(width: 36, height: 36)
-                    .background(.blue, in: Circle())
-                    .foregroundStyle(.white)
-            }
-            .buttonStyle(.plain)
+            HStack(spacing: 24) {
+                Button(action: previous) {
+                    Image(systemName: "backward.fill")
+                }
+                .disabled(playback.currentClipIndex == nil || playback.currentClipIndex == 0)
 
-            Button(action: next) {
-                Image(systemName: "forward.fill")
-            }
-            .disabled(!canGoForward)
+                Button(action: playPause) {
+                    Image(systemName: playback.state.isPlaying ? "pause.fill" : "play.fill")
+                        .frame(width: 36, height: 36)
+                        .background(.blue, in: Circle())
+                        .foregroundStyle(.white)
+                }
+                .buttonStyle(.plain)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Read Aloud")
-                    .font(.caption.bold())
-                Text(playback.currentClipNumberText)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                Button(action: next) {
+                    Image(systemName: "forward.fill")
+                }
+                .disabled(!canGoForward)
             }
 
             Spacer()
