@@ -893,6 +893,19 @@ struct ReaderView: View {
         }
 
         if !playableIDs.isEmpty,
+           let beforeFragmentID = await firstPlayableFragmentIDBeforeViewport(
+            fragmentIDs: playableIDs,
+            navigator: navigator
+           ),
+           let beforeClipIndex = exactClipIndex(for: EPUBReference(
+            resourceHref: visibleResourceHref,
+            fragmentID: beforeFragmentID
+           )) {
+            logReaderEvent("resolvedPlaybackStartTarget.result", reference: EPUBReference(resourceHref: visibleResourceHref, fragmentID: beforeFragmentID), extra: "target=beforeClipIndex shouldNavigate=true clipIndex=\(beforeClipIndex)")
+            return PlaybackStartTarget(clipIndex: beforeClipIndex, shouldNavigate: true)
+        }
+
+        if !playableIDs.isEmpty,
            let forwardFragmentID = await firstPlayableFragmentIDAfterViewport(
             fragmentIDs: playableIDs,
             navigator: navigator
@@ -924,7 +937,7 @@ struct ReaderView: View {
         (() => {
           const fragmentIDs = \(fragmentIDsLiteral);
 
-          const topInsideViewport = element => {
+          const topIntersectingViewport = element => {
             if (!element) {
               return null;
             }
@@ -935,13 +948,13 @@ struct ReaderView: View {
             }
 
             const rect = element.getBoundingClientRect();
-            return rect.top >= 0 && rect.top <= window.innerHeight ? rect.top : null;
+            return rect.bottom > 0 && rect.top < window.innerHeight ? rect.top : null;
           };
 
           let firstVisible = null;
           for (const fragmentID of fragmentIDs) {
             const element = document.getElementById(fragmentID);
-            const top = topInsideViewport(element);
+            const top = topIntersectingViewport(element);
             if (top === null) {
               continue;
             }
@@ -952,6 +965,53 @@ struct ReaderView: View {
           }
 
           return firstVisible?.fragmentID ?? null;
+        })();
+        """
+
+        let result = await navigator.evaluateJavaScript(script)
+        guard case .success(let value) = result,
+              let fragmentID = value as? String,
+              !fragmentID.isEmpty
+        else {
+            return nil
+        }
+
+        return fragmentID
+    }
+
+    @MainActor
+    private func firstPlayableFragmentIDBeforeViewport(
+        fragmentIDs: [String],
+        navigator: EPUBNavigatorViewController
+    ) async -> String? {
+        let fragmentIDsLiteral = javaScriptArrayLiteral(fragmentIDs)
+        let script = """
+        (() => {
+          const fragmentIDs = \(fragmentIDsLiteral);
+
+          let nearestBefore = null;
+          for (const fragmentID of fragmentIDs) {
+            const element = document.getElementById(fragmentID);
+            if (!element) {
+              continue;
+            }
+
+            const style = window.getComputedStyle(element);
+            if (style.display === 'none' || style.visibility === 'hidden') {
+              continue;
+            }
+
+            const rect = element.getBoundingClientRect();
+            if (rect.bottom > 0) {
+              continue;
+            }
+
+            if (!nearestBefore || rect.bottom > nearestBefore.bottom) {
+              nearestBefore = { bottom: rect.bottom, fragmentID };
+            }
+          }
+
+          return nearestBefore?.fragmentID ?? null;
         })();
         """
 
