@@ -17,7 +17,6 @@ struct ReaderView: View {
     @Environment(\.modelContext) private var modelContext
     @SwiftUI.AppStorage(ReaderSettings.fontSizeKey) private var readerFontSize = ReaderSettings.defaultFontSize
     @SwiftUI.AppStorage(ReaderSettings.fontFamilyKey) private var readerFontFamilyRawValue = ""
-    @SwiftUI.AppStorage(ReaderSettings.lineHeightKey) private var readerLineHeight = ReaderSettings.defaultLineHeight
     @SwiftUI.AppStorage(ReaderSettings.themeKey) private var readerThemeRawValue = AppThemeOption.system.rawValue
     @SwiftUI.AppStorage(ReaderSettings.readAloudColorKey) private var readerReadAloudColorRawValue = ReaderSettings.defaultReadAloudColorHex
     @SwiftUI.AppStorage(ReaderSettings.playbackSpeedKey) private var readerPlaybackSpeed = ReaderSettings.defaultPlaybackSpeed
@@ -78,7 +77,6 @@ struct ReaderView: View {
                             playback: playback,
                             playbackSpeed: $readerPlaybackSpeed,
                             fontSize: $readerFontSize,
-                            lineHeight: $readerLineHeight,
                             isSpeedControlPresented: $isPlaybackSpeedControlPresented,
                             isReaderSettingsControlPresented: $isReaderSettingsControlPresented,
                             toggleSpeedControl: togglePlaybackSpeedControl,
@@ -141,9 +139,6 @@ struct ReaderView: View {
                     applyReaderPreferences(to: navigator)
                 }
                 .onChange(of: readerFontFamilyRawValue) { _, _ in
-                    applyReaderPreferences(to: navigator)
-                }
-                .onChange(of: readerLineHeight) { _, _ in
                     applyReaderPreferences(to: navigator)
                 }
                 .onChange(of: readerThemeRawValue) { _, _ in
@@ -238,7 +233,6 @@ struct ReaderView: View {
         EPUBPreferences(
             fontFamily: ReaderSettings.fontFamily(from: readerFontFamilyRawValue),
             fontSize: ReaderSettings.normalizedFontSize(readerFontSize),
-            lineHeight: ReaderSettings.normalizedLineHeight(readerLineHeight),
             publisherStyles: false,
             scroll: true,
             theme: ReaderSettings.appTheme(from: readerThemeRawValue).readiumTheme(for: colorScheme)
@@ -1353,7 +1347,6 @@ private struct MediaOverlayPlaybackBar: View {
     @ObservedObject var playback: MediaOverlayPlaybackController
     @Binding var playbackSpeed: Double
     @Binding var fontSize: Double
-    @Binding var lineHeight: Double
     @Binding var isSpeedControlPresented: Bool
     @Binding var isReaderSettingsControlPresented: Bool
     let toggleSpeedControl: () -> Void
@@ -1374,7 +1367,7 @@ private struct MediaOverlayPlaybackBar: View {
                     Spacer(minLength: 0)
 
                     if isReaderSettingsControlPresented {
-                        ReaderTypographyControlPanel(fontSize: $fontSize, lineHeight: $lineHeight)
+                        ReaderTypographyControlPanel(fontSize: $fontSize)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
                 }
@@ -1470,11 +1463,10 @@ private struct PlaybackSpeedControlPanel: View {
 
 private struct ReaderTypographyControlPanel: View {
     @Binding var fontSize: Double
-    @Binding var lineHeight: Double
 
     var body: some View {
-        ReaderControlPanel(width: 260) {
-            VStack(alignment: .leading, spacing: 16) {
+        ReaderControlPanel(width: 240) {
+            VStack(alignment: .leading, spacing: 12) {
                 Text("Reader Settings")
                     .font(.subheadline.weight(.semibold))
 
@@ -1493,24 +1485,6 @@ private struct ReaderTypographyControlPanel: View {
                         ),
                         in: ReaderSettings.fontSizeRange,
                         step: ReaderSettings.fontSizeStep
-                    )
-                }
-
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        Text("Line Height")
-                        Spacer()
-                        Text(lineHeight.formatted(.number.precision(.fractionLength(1))))
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Slider(
-                        value: Binding(
-                            get: { ReaderSettings.normalizedLineHeight(lineHeight) },
-                            set: { lineHeight = ReaderSettings.normalizedLineHeight($0) }
-                        ),
-                        in: ReaderSettings.lineHeightRange,
-                        step: ReaderSettings.lineHeightStep
                     )
                 }
             }

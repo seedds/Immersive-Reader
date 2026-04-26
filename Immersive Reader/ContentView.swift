@@ -479,7 +479,6 @@ private struct UploadView: View {
 private struct SettingsView: View {
     @SwiftUI.AppStorage(ReaderSettings.fontSizeKey) private var fontSize = ReaderSettings.defaultFontSize
     @SwiftUI.AppStorage(ReaderSettings.fontFamilyKey) private var fontFamilyRawValue = ""
-    @SwiftUI.AppStorage(ReaderSettings.lineHeightKey) private var lineHeight = ReaderSettings.defaultLineHeight
     @SwiftUI.AppStorage(ReaderSettings.themeKey) private var themeRawValue = AppThemeOption.system.rawValue
     @SwiftUI.AppStorage(ReaderSettings.readAloudColorKey) private var readAloudColorRawValue = ReaderSettings.defaultReadAloudColorHex
     @SwiftUI.AppStorage(ReaderSettings.playbackSpeedKey) private var playbackSpeed = ReaderSettings.defaultPlaybackSpeed
@@ -488,7 +487,7 @@ private struct SettingsView: View {
         NavigationStack {
             Form {
                 Section("Reader") {
-                    VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 6) {
                         HStack {
                             Text("Font Size")
                             Spacer()
@@ -506,25 +505,7 @@ private struct SettingsView: View {
                         )
                     }
 
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack {
-                            Text("Line Height")
-                            Spacer()
-                            Text(lineHeight.formatted(.number.precision(.fractionLength(1))))
-                                .foregroundStyle(.secondary)
-                        }
-
-                        Slider(
-                            value: Binding(
-                                get: { ReaderSettings.normalizedLineHeight(lineHeight) },
-                                set: { lineHeight = ReaderSettings.normalizedLineHeight($0) }
-                            ),
-                            in: ReaderSettings.lineHeightRange,
-                            step: ReaderSettings.lineHeightStep
-                        )
-                    }
-
-                    VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 6) {
                         HStack {
                             Text("Playback Speed")
                             Spacer()
@@ -550,30 +531,12 @@ private struct SettingsView: View {
                 }
 
                 Section("Appearance") {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Theme")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-
-                        HStack(spacing: 8) {
-                            ForEach(AppThemeOption.allCases) { option in
-                                Button {
-                                    themeRawValue = option.rawValue
-                                } label: {
-                                    Text(option.name)
-                                        .font(.subheadline.weight(.semibold))
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 10)
-                                        .background {
-                                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                                .fill(isThemeSelected(option) ? Color.accentColor : Color(uiColor: .secondarySystemFill))
-                                        }
-                                        .foregroundStyle(isThemeSelected(option) ? Color.white : Color.primary)
-                                }
-                                .buttonStyle(.plain)
-                            }
+                    Picker("Theme", selection: $themeRawValue) {
+                        ForEach(AppThemeOption.allCases) { option in
+                            Text(option.name).tag(option.rawValue)
                         }
                     }
+                    .pickerStyle(.segmented)
 
                     NavigationLink {
                         ReadAloudColorEditor(colorHex: $readAloudColorRawValue)
@@ -602,10 +565,9 @@ private struct SettingsView: View {
                 }
 
                 Section("Preview") {
-                    VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 8) {
                         Text("The quick brown fox jumps over the lazy dog.\nPack my box with five dozen liquor jugs.")
                             .font(.system(size: previewFontSize))
-                            .lineSpacing(previewLineSpacing)
 
                         Text("Read aloud sample")
                             .font(.footnote.weight(.medium))
@@ -620,15 +582,11 @@ private struct SettingsView: View {
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
-                    .padding(.vertical, 6)
+                    .padding(.vertical, 4)
                     .preferredColorScheme(selectedAppTheme.preferredColorScheme)
                 }
             }
         }
-    }
-
-    private func isThemeSelected(_ option: AppThemeOption) -> Bool {
-        selectedAppTheme == option
     }
 
     private var selectedFontFamilyName: String {
@@ -641,10 +599,6 @@ private struct SettingsView: View {
 
     private var previewFontSize: Double {
         17 * ReaderSettings.normalizedFontSize(fontSize)
-    }
-
-    private var previewLineSpacing: Double {
-        max(0, ReaderSettings.normalizedLineHeight(lineHeight) - 1) * previewFontSize
     }
 }
 

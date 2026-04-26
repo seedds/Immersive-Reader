@@ -13,19 +13,15 @@ import UIKit
 enum ReaderSettings {
     static let fontSizeKey = "readerFontSize"
     static let fontFamilyKey = "readerFontFamily"
-    static let lineHeightKey = "readerLineHeight"
     static let themeKey = "readerTheme"
     static let readAloudColorKey = "readerReadAloudColor"
     static let playbackSpeedKey = "readerPlaybackSpeed"
     static let defaultFontSize = 1.2
-    static let defaultLineHeight = 1.0
     static let defaultReadAloudColorHex = "#34C759"
     static let defaultPlaybackSpeed = 1.0
     static let fontSizeRange = 0.8 ... 2.0
-    static let lineHeightRange = 1.0 ... 2.0
     static let playbackSpeedRange = 0.5 ... 2.0
     static let fontSizeStep = 0.1
-    static let lineHeightStep = 0.1
     static let playbackSpeedStep = 0.1
 
     static let fontFamilyOptions: [FontFamilyOption] = [
@@ -54,10 +50,6 @@ enum ReaderSettings {
 
     static func normalizedFontSize(_ value: Double) -> Double {
         min(max(value, fontSizeRange.lowerBound), fontSizeRange.upperBound)
-    }
-
-    static func normalizedLineHeight(_ value: Double) -> Double {
-        min(max(value, lineHeightRange.lowerBound), lineHeightRange.upperBound)
     }
 
     static func normalizedPlaybackSpeed(_ value: Double) -> Double {
