@@ -25,8 +25,19 @@ enum LocalUploadServerError: LocalizedError {
 final class LocalUploadServer {
     typealias APICompletion = (Result<Data, Error>) -> Void
 
+    struct UploadTransferSnapshot {
+        let id: UUID
+        let filename: String
+        let receivedBytes: Int64
+        let totalBytes: Int64
+        let startedAt: Date
+    }
+
     let port: UInt16
-    var onUploadFinished: ((URL, String) -> Void)?
+    var onUploadStarted: ((UploadTransferSnapshot) -> Void)?
+    var onUploadProgress: ((UploadTransferSnapshot) -> Void)?
+    var onUploadFinished: ((UUID, URL, String) -> Void)?
+    var onUploadFailed: ((UUID, String, String) -> Void)?
     var onBooksRequested: (((@escaping APICompletion) -> Void))?
     var onRenameRequested: ((UUID, String, @escaping APICompletion) -> Void)?
     var onDeleteRequested: ((UUID, @escaping APICompletion) -> Void)?
@@ -78,15 +89,21 @@ final class LocalUploadServer {
         let id = ObjectIdentifier(uploadConnection)
         connections[id] = uploadConnection
 
-        uploadConnection.onUploadFinished = { [weak self] url, filename in
-            self?.onUploadFinished?(url, filename)
+        uploadConnection.onUploadStarted = { [weak self] snapshot in
+            self?.onUploadStarted?(snapshot)
+        }
+        uploadConnection.onUploadProgress = { [weak self] snapshot in
+            self?.onUploadProgress?(snapshot)
+        }
+        uploadConnection.onUploadFinished = { [weak self] uploadID, url, filename in
+            self?.onUploadFinished?(uploadID, url, filename)
+        }
+        uploadConnection.onUploadFailed = { [weak self] uploadID, filename, message in
+            self?.onUploadFailed?(uploadID, filename, message)
         }
         uploadConnection.onBooksRequested = onBooksRequested
         uploadConnection.onRenameRequested = onRenameRequested
         uploadConnection.onDeleteRequested = onDeleteRequested
-        uploadConnection.onError = { [weak self] message in
-            self?.onError?(message)
-        }
         uploadConnection.onComplete = { [weak self] in
             self?.connections.removeValue(forKey: id)
         }
@@ -98,18 +115,22 @@ final class LocalUploadServer {
 private final class HTTPUploadConnection {
     typealias APICompletion = LocalUploadServer.APICompletion
 
-    var onUploadFinished: ((URL, String) -> Void)?
+    var onUploadStarted: ((LocalUploadServer.UploadTransferSnapshot) -> Void)?
+    var onUploadProgress: ((LocalUploadServer.UploadTransferSnapshot) -> Void)?
+    var onUploadFinished: ((UUID, URL, String) -> Void)?
+    var onUploadFailed: ((UUID, String, String) -> Void)?
     var onBooksRequested: (((@escaping APICompletion) -> Void))?
     var onRenameRequested: ((UUID, String, @escaping APICompletion) -> Void)?
     var onDeleteRequested: ((UUID, @escaping APICompletion) -> Void)?
-    var onError: ((String) -> Void)?
     var onComplete: (() -> Void)?
 
     private let connection: NWConnection
     private var headerData = Data()
     private var uploadFileHandle: FileHandle?
     private var uploadTempURL: URL?
+    private var uploadID = UUID()
     private var uploadFilename: String?
+    private var uploadStartedAt: Date?
     private var expectedBodyLength: Int64 = 0
     private var receivedBodyLength: Int64 = 0
 
@@ -330,9 +351,15 @@ private final class HTTPUploadConnection {
 
         uploadFileHandle = try FileHandle(forWritingTo: tempURL)
         uploadTempURL = tempURL
+        uploadID = UUID()
         uploadFilename = filename
+        uploadStartedAt = Date()
         expectedBodyLength = contentLength
         receivedBodyLength = 0
+
+        if let snapshot = currentUploadSnapshot() {
+            onUploadStarted?(snapshot)
+        }
     }
 
     private func writeBody(_ data: Data) throws {
@@ -349,6 +376,10 @@ private final class HTTPUploadConnection {
 
         try uploadFileHandle?.write(contentsOf: dataToWrite)
         receivedBodyLength += Int64(dataToWrite.count)
+
+        if let snapshot = currentUploadSnapshot() {
+            onUploadProgress?(snapshot)
+        }
     }
 
     private func finishUpload() {
@@ -364,7 +395,10 @@ private final class HTTPUploadConnection {
             let uploadsDirectory = try AppStorage.uploadsDirectory()
             let finalURL = AppStorage.uniqueFileURL(named: uploadFilename, in: uploadsDirectory)
             try FileManager.default.moveItem(at: uploadTempURL, to: finalURL)
-            onUploadFinished?(finalURL, uploadFilename)
+            if let snapshot = currentUploadSnapshot() {
+                onUploadProgress?(snapshot)
+            }
+            onUploadFinished?(uploadID, finalURL, uploadFilename)
             finishWithHTTP(status: 200, body: "Uploaded \(uploadFilename)")
         } catch {
             finishWithError(error.localizedDescription)
@@ -396,7 +430,9 @@ private final class HTTPUploadConnection {
     }
 
     private func finishWithError(_ message: String) {
-        onError?(message)
+        if let snapshot = currentUploadSnapshot() {
+            onUploadFailed?(snapshot.id, snapshot.filename, message)
+        }
         try? uploadFileHandle?.close()
         uploadFileHandle = nil
         if let uploadTempURL {
@@ -408,7 +444,26 @@ private final class HTTPUploadConnection {
     private func cleanup() {
         try? uploadFileHandle?.close()
         uploadFileHandle = nil
+        uploadTempURL = nil
+        uploadFilename = nil
+        uploadStartedAt = nil
+        expectedBodyLength = 0
+        receivedBodyLength = 0
         onComplete?()
+    }
+
+    private func currentUploadSnapshot() -> LocalUploadServer.UploadTransferSnapshot? {
+        guard let uploadFilename, let uploadStartedAt else {
+            return nil
+        }
+
+        return LocalUploadServer.UploadTransferSnapshot(
+            id: uploadID,
+            filename: uploadFilename,
+            receivedBytes: receivedBodyLength,
+            totalBytes: expectedBodyLength,
+            startedAt: uploadStartedAt
+        )
     }
 
     private func parseHeaders(_ lines: ArraySlice<String>) -> [String: String] {
@@ -497,7 +552,10 @@ private final class HTTPUploadConnection {
             h2 { margin: 0 0 14px; font-size: 22px; }
             p { color: #6b6258; line-height: 1.5; }
             section { background: white; border-radius: 24px; padding: 24px; box-shadow: 0 24px 80px rgba(60, 38, 15, .14); margin-bottom: 18px; }
-            .drop { border: 2px dashed #b88a44; border-radius: 18px; padding: 26px; text-align: center; background: #fffaf1; }
+            .page-drop-overlay { position: fixed; inset: 16px; border-radius: 28px; border: 3px dashed #1e5bff; background: rgba(30, 91, 255, .08); color: #1c3d92; display: none; align-items: center; justify-content: center; text-align: center; padding: 24px; font-size: clamp(22px, 4vw, 34px); font-weight: 800; letter-spacing: -.03em; pointer-events: none; z-index: 10; }
+            body.drag-active .page-drop-overlay { display: flex; }
+            body.drag-active .drop { border-color: #1e5bff; background: #eef4ff; box-shadow: inset 0 0 0 1px rgba(30, 91, 255, .12); }
+            .drop { border: 2px dashed #b88a44; border-radius: 18px; padding: 26px; text-align: center; background: #fffaf1; transition: background .15s ease, border-color .15s ease, box-shadow .15s ease; }
             input { max-width: 100%; }
             button { border: 0; border-radius: 999px; padding: 10px 14px; background: #1e5bff; color: white; font-weight: 700; cursor: pointer; }
             button.secondary { background: #eadfce; color: #33261a; }
@@ -506,6 +564,19 @@ private final class HTTPUploadConnection {
             #status { min-height: 24px; margin-top: 14px; font-weight: 700; }
             #status.error { color: #c93528; }
             #status.success { color: #20764c; }
+            .queue { display: grid; gap: 12px; margin-top: 18px; }
+            .upload-item { border: 1px solid #eee4d3; border-radius: 18px; padding: 16px; background: #fffdf8; }
+            .upload-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+            .upload-item .title { font-weight: 800; font-size: 17px; overflow-wrap: anywhere; }
+            .badge { display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; padding: 6px 10px; font-size: 12px; font-weight: 800; white-space: nowrap; }
+            .badge.queued { background: #eadfce; color: #5e4a33; }
+            .badge.uploading { background: #dce7ff; color: #1c3d92; }
+            .badge.done { background: #dff3e8; color: #20764c; }
+            .badge.failed { background: #fde4e1; color: #c93528; }
+            .progress-track { margin-top: 12px; height: 10px; border-radius: 999px; overflow: hidden; background: #efe5d7; }
+            .progress-fill { height: 100%; width: 0; background: linear-gradient(90deg, #6a40ff, #1e5bff); transition: width .12s linear; }
+            .upload-item.failed .progress-fill { background: #c93528; }
+            .error-text { color: #c93528; }
             .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
             .books { display: grid; gap: 12px; }
             .book { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; align-items: center; padding: 16px; border: 1px solid #eee4d3; border-radius: 18px; background: #fffdf8; }
@@ -522,6 +593,7 @@ private final class HTTPUploadConnection {
           </style>
         </head>
         <body>
+          <div class="page-drop-overlay">Drop EPUB files to start uploading</div>
           <main>
             <header>
               <h1>Immersive Reader Files</h1>
@@ -530,12 +602,14 @@ private final class HTTPUploadConnection {
 
             <section>
               <h2>Upload EPUB</h2>
-              <div class="drop">
-                <strong>Select an .epub file</strong><br><br>
-                <input id="file" type="file" accept=".epub,application/epub+zip">
-                <br><br>
-                <button id="upload">Upload</button>
+              <div class="drop" id="drop-zone">
+                <strong>Drop .epub files anywhere on this page</strong>
+                <p>Or choose one or more files below and uploads will start immediately.</p>
+                <input id="file" type="file" accept=".epub,application/epub+zip" multiple>
                 <div id="status"></div>
+              </div>
+              <div id="queue" class="queue">
+                <div class="empty">No uploads queued yet.</div>
               </div>
             </section>
 
@@ -549,10 +623,14 @@ private final class HTTPUploadConnection {
           </main>
           <script>
             const input = document.getElementById('file');
-            const button = document.getElementById('upload');
             const refresh = document.getElementById('refresh');
+            const queue = document.getElementById('queue');
             const status = document.getElementById('status');
             const books = document.getElementById('books');
+            const queueItems = [];
+            let nextQueueID = 1;
+            let isUploading = false;
+            let dragDepth = 0;
 
             function setStatus(message, type = '') {
               status.textContent = message;
@@ -570,15 +648,233 @@ private final class HTTPUploadConnection {
             }
 
             function formatBytes(bytes) {
-              if (!bytes) return '0 B';
+              const numericBytes = Math.max(0, Number(bytes) || 0);
+              if (!numericBytes) return '0 B';
               const units = ['B', 'KB', 'MB', 'GB'];
-              let value = bytes;
+              let value = numericBytes;
               let unit = 0;
               while (value >= 1024 && unit < units.length - 1) {
                 value /= 1024;
                 unit += 1;
               }
               return `${value.toFixed(value >= 10 || unit === 0 ? 0 : 1)} ${units[unit]}`;
+            }
+
+            function formatSpeed(bytesPerSecond) {
+              return `${formatBytes(bytesPerSecond)}/s`;
+            }
+
+            function progressValue(item) {
+              const totalBytes = item.totalBytes || item.size || 0;
+              if (!totalBytes) return item.status === 'done' ? 1 : 0;
+              return Math.min(Math.max(item.uploadedBytes / totalBytes, 0), 1);
+            }
+
+            function statusLabel(item) {
+              switch (item.status) {
+                case 'queued': return 'Queued';
+                case 'uploading': return `Uploading ${Math.round(progressValue(item) * 100)}%`;
+                case 'done': return 'Uploaded';
+                case 'failed': return 'Failed';
+                default: return item.status;
+              }
+            }
+
+            function renderQueue() {
+              if (!queueItems.length) {
+                queue.innerHTML = '<div class="empty">No uploads queued yet.</div>';
+                return;
+              }
+
+              queue.innerHTML = queueItems.map(item => {
+                const totalBytes = item.totalBytes || item.size || 0;
+                const details = [];
+                details.push(statusLabel(item));
+
+                if (item.status === 'queued') {
+                  details.push(formatBytes(item.size));
+                } else if (totalBytes || item.uploadedBytes) {
+                  details.push(`${formatBytes(item.uploadedBytes)} / ${formatBytes(totalBytes)}`);
+                }
+
+                if (item.status === 'uploading') {
+                  details.push(formatSpeed(item.speedBytesPerSecond));
+                }
+
+                return `
+                  <article class="upload-item ${escapeHTML(item.status)}">
+                    <div class="upload-head">
+                      <div>
+                        <div class="title">${escapeHTML(item.name)}</div>
+                        <div class="meta">${details.map(escapeHTML).join(' &middot; ')}</div>
+                      </div>
+                      <span class="badge ${escapeHTML(item.status)}">${escapeHTML(statusLabel(item))}</span>
+                    </div>
+                    <div class="progress-track" aria-hidden="true">
+                      <div class="progress-fill" style="width: ${Math.round(progressValue(item) * 100)}%"></div>
+                    </div>
+                    ${item.message ? `<div class="meta ${item.status === 'failed' ? 'error-text' : ''}">${escapeHTML(item.message)}</div>` : ''}
+                  </article>
+                `;
+              }).join('');
+            }
+
+            function enqueueFiles(fileList) {
+              const files = Array.from(fileList || []);
+              if (!files.length) return;
+
+              let queuedCount = 0;
+              let rejectedCount = 0;
+
+              files.forEach(file => {
+                if (!file.name.toLowerCase().endsWith('.epub')) {
+                  rejectedCount += 1;
+                  queueItems.push({
+                    id: `upload-${nextQueueID++}`,
+                    file: null,
+                    name: file.name,
+                    size: file.size || 0,
+                    uploadedBytes: 0,
+                    totalBytes: file.size || 0,
+                    speedBytesPerSecond: 0,
+                    status: 'failed',
+                    message: 'Only .epub files are supported.'
+                  });
+                  return;
+                }
+
+                queuedCount += 1;
+                queueItems.push({
+                  id: `upload-${nextQueueID++}`,
+                  file,
+                  name: file.name,
+                  size: file.size || 0,
+                  uploadedBytes: 0,
+                  totalBytes: file.size || 0,
+                  speedBytesPerSecond: 0,
+                  status: 'queued',
+                  message: 'Queued for upload.'
+                });
+              });
+
+              renderQueue();
+
+              if (queuedCount && rejectedCount) {
+                setStatus(`${queuedCount} file${queuedCount === 1 ? '' : 's'} queued. ${rejectedCount} skipped.`, 'error');
+              } else if (queuedCount) {
+                setStatus(`${queuedCount} file${queuedCount === 1 ? '' : 's'} queued for upload.`, 'success');
+              } else if (rejectedCount) {
+                setStatus(`Only .epub files are supported. ${rejectedCount} skipped.`, 'error');
+              }
+
+              processQueue();
+            }
+
+            async function processQueue() {
+              if (isUploading) return;
+
+              isUploading = true;
+              try {
+                let nextItem = queueItems.find(item => item.status === 'queued');
+                while (nextItem) {
+                  await uploadFile(nextItem);
+                  nextItem = queueItems.find(item => item.status === 'queued');
+                }
+              } finally {
+                isUploading = false;
+                renderQueue();
+              }
+            }
+
+            function uploadFile(item) {
+              return new Promise(resolve => {
+                item.status = 'uploading';
+                item.uploadedBytes = 0;
+                item.totalBytes = item.size || item.totalBytes;
+                item.speedBytesPerSecond = 0;
+                item.message = 'Uploading now...';
+                item.startedAt = performance.now();
+                renderQueue();
+
+                const request = new XMLHttpRequest();
+                request.open('POST', '/upload?filename=' + encodeURIComponent(item.name));
+                request.setRequestHeader('Content-Type', 'application/epub+zip');
+
+                request.upload.onprogress = event => {
+                  item.uploadedBytes = event.loaded || 0;
+                  if (event.lengthComputable && event.total) {
+                    item.totalBytes = event.total;
+                  }
+
+                  const elapsedSeconds = Math.max((performance.now() - item.startedAt) / 1000, 0.001);
+                  item.speedBytesPerSecond = item.uploadedBytes / elapsedSeconds;
+                  item.message = `${Math.round(progressValue(item) * 100)}% uploaded.`;
+                  renderQueue();
+                };
+
+                request.onload = async () => {
+                  item.speedBytesPerSecond = 0;
+                  item.uploadedBytes = item.totalBytes || item.size || item.uploadedBytes;
+
+                  if (request.status >= 200 && request.status < 300) {
+                    item.status = 'done';
+                    item.message = request.responseText || 'Uploaded.';
+                    item.file = null;
+                    setStatus(`Uploaded ${item.name}.`, 'success');
+                    renderQueue();
+
+                    try {
+                      await new Promise(resolveDelay => setTimeout(resolveDelay, 200));
+                      await loadBooks();
+                    } catch (error) {
+                      setStatus(`Uploaded ${item.name}, but could not refresh files: ${error.message}`, 'error');
+                    }
+                  } else {
+                    item.status = 'failed';
+                    item.message = request.responseText || `Upload failed (${request.status}).`;
+                    item.file = null;
+                    setStatus(`Upload failed for ${item.name}: ${item.message}`, 'error');
+                    renderQueue();
+                  }
+
+                  resolve();
+                };
+
+                request.onerror = () => {
+                  item.speedBytesPerSecond = 0;
+                  item.status = 'failed';
+                  item.message = 'Network error while uploading.';
+                  item.file = null;
+                  setStatus(`Upload failed for ${item.name}: ${item.message}`, 'error');
+                  renderQueue();
+                  resolve();
+                };
+
+                request.onabort = () => {
+                  item.speedBytesPerSecond = 0;
+                  item.status = 'failed';
+                  item.message = 'Upload was canceled.';
+                  item.file = null;
+                  setStatus(`Upload canceled for ${item.name}.`, 'error');
+                  renderQueue();
+                  resolve();
+                };
+
+                request.send(item.file);
+              });
+            }
+
+            function dragContainsFiles(event) {
+              return Array.from(event.dataTransfer?.types || []).includes('Files');
+            }
+
+            function activateDragState() {
+              document.body.classList.add('drag-active');
+            }
+
+            function clearDragState() {
+              dragDepth = 0;
+              document.body.classList.remove('drag-active');
             }
 
             async function requestText(url, options = {}) {
@@ -650,31 +946,43 @@ private final class HTTPUploadConnection {
               }
             };
 
-            button.onclick = async () => {
-              const file = input.files[0];
-              if (!file) { setStatus('Choose a file first.', 'error'); return; }
-              if (!file.name.toLowerCase().endsWith('.epub')) { setStatus('Only .epub files are supported.', 'error'); return; }
-              button.disabled = true;
-              setStatus('Uploading...');
-              try {
-                const response = await fetch('/upload?filename=' + encodeURIComponent(file.name), {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/epub+zip' },
-                  body: file
-                });
-                const text = await response.text();
-                if (!response.ok) throw new Error(text);
-                setStatus(text, 'success');
-                input.value = '';
-                await loadBooks();
-              } catch (error) {
-                setStatus('Upload failed: ' + error.message, 'error');
-              } finally {
-                button.disabled = false;
-              }
+            input.onchange = () => {
+              enqueueFiles(input.files);
+              input.value = '';
             };
 
+            document.addEventListener('dragenter', event => {
+              if (!dragContainsFiles(event)) return;
+              event.preventDefault();
+              dragDepth += 1;
+              activateDragState();
+            });
+
+            document.addEventListener('dragover', event => {
+              if (!dragContainsFiles(event)) return;
+              event.preventDefault();
+              event.dataTransfer.dropEffect = 'copy';
+              activateDragState();
+            });
+
+            document.addEventListener('dragleave', event => {
+              if (!dragContainsFiles(event)) return;
+              event.preventDefault();
+              dragDepth = Math.max(dragDepth - 1, 0);
+              if (dragDepth === 0) {
+                document.body.classList.remove('drag-active');
+              }
+            });
+
+            document.addEventListener('drop', event => {
+              if (!dragContainsFiles(event)) return;
+              event.preventDefault();
+              clearDragState();
+              enqueueFiles(event.dataTransfer.files);
+            });
+
             refresh.onclick = loadBooks;
+            renderQueue();
             loadBooks();
           </script>
         </body>

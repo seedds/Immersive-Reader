@@ -280,6 +280,50 @@ private struct UploadView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                if !controller.activeUploads.isEmpty {
+                    Section("Upload Activity") {
+                        ForEach(controller.activeUploads) { upload in
+                            VStack(alignment: .leading, spacing: 10) {
+                                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                                    Text(upload.filename)
+                                        .font(.headline)
+                                        .lineLimit(2)
+
+                                    Spacer()
+
+                                    Text(uploadStatusText(upload))
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(upload.failureMessage == nil ? Color.secondary : Color.red)
+                                }
+
+                                if let failureMessage = upload.failureMessage {
+                                    Text(failureMessage)
+                                        .font(.caption)
+                                        .foregroundStyle(.red)
+                                } else {
+                                    ProgressView(value: upload.isImporting ? 1 : upload.progress)
+
+                                    HStack(spacing: 12) {
+                                        Text(uploadProgressText(upload))
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+
+                                        Spacer()
+
+                                        if upload.isUploading {
+                                            Text(formattedTransferRate(upload.speedBytesPerSecond))
+                                                .font(.caption)
+                                                .monospacedDigit()
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                }
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
+                }
+
                 Section("Recent Uploads") {
                     if controller.recentUploads.isEmpty {
                         Text("No uploads yet")
@@ -298,6 +342,30 @@ private struct UploadView: View {
             }
             .navigationTitle("Upload")
         }
+    }
+
+    private func uploadStatusText(_ upload: UploadServerController.ActiveUpload) -> String {
+        if upload.isImporting {
+            return "Importing..."
+        }
+
+        if upload.failureMessage != nil {
+            return "Failed"
+        }
+
+        return "\(Int(upload.progress * 100))%"
+    }
+
+    private func uploadProgressText(_ upload: UploadServerController.ActiveUpload) -> String {
+        let received = ByteCountFormatter.string(fromByteCount: upload.receivedBytes, countStyle: .file)
+        let total = ByteCountFormatter.string(fromByteCount: upload.totalBytes, countStyle: .file)
+        return "\(received) / \(total)"
+    }
+
+    private func formattedTransferRate(_ bytesPerSecond: Double) -> String {
+        let roundedRate = Int64(bytesPerSecond.rounded())
+        let value = ByteCountFormatter.string(fromByteCount: roundedRate, countStyle: .file)
+        return "\(value)/s"
     }
 }
 

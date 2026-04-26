@@ -49,7 +49,55 @@ final class UploadServerController: ObservableObject {
         let date: Date
     }
 
+    struct ActiveUpload: Identifiable {
+        enum Phase {
+            case uploading
+            case importing
+            case failed(String)
+        }
+
+        let id: UUID
+        var filename: String
+        var startedAt: Date
+        var receivedBytes: Int64
+        var totalBytes: Int64
+        var phase: Phase
+
+        var progress: Double {
+            guard totalBytes > 0 else { return 0 }
+            return min(max(Double(receivedBytes) / Double(totalBytes), 0), 1)
+        }
+
+        var speedBytesPerSecond: Double {
+            guard isUploading else { return 0 }
+            let elapsed = max(Date().timeIntervalSince(startedAt), 0.001)
+            return Double(receivedBytes) / elapsed
+        }
+
+        var isUploading: Bool {
+            if case .uploading = phase {
+                return true
+            }
+            return false
+        }
+
+        var isImporting: Bool {
+            if case .importing = phase {
+                return true
+            }
+            return false
+        }
+
+        var failureMessage: String? {
+            if case .failed(let message) = phase {
+                return message
+            }
+            return nil
+        }
+    }
+
     @Published private(set) var status: Status = .stopped
+    @Published private(set) var activeUploads: [ActiveUpload] = []
     @Published private(set) var recentUploads: [UploadRecord] = []
     @Published var port: UInt16 = 8080
 
@@ -66,20 +114,37 @@ final class UploadServerController: ObservableObject {
         guard server == nil else { return }
 
         let server = LocalUploadServer(port: port)
-        server.onUploadFinished = { [weak self] fileURL, filename in
+        server.onUploadStarted = { [weak self] snapshot in
+            Task { @MainActor in
+                self?.upsertActiveUpload(from: snapshot, phase: .uploading)
+            }
+        }
+        server.onUploadProgress = { [weak self] snapshot in
+            Task { @MainActor in
+                self?.upsertActiveUpload(from: snapshot, phase: .uploading)
+            }
+        }
+        server.onUploadFinished = { [weak self] uploadID, fileURL, filename in
             Task { @MainActor in
                 do {
                     defer { try? FileManager.default.removeItem(at: fileURL) }
+                    self?.setPhase(.importing, forUploadID: uploadID)
                     try BookImportService.importBooks(
                         from: [fileURL],
                         modelContext: modelContext,
                         existingBookStrategy: .overwrite
                     )
+                    self?.removeActiveUpload(id: uploadID)
                     self?.recentUploads.insert(UploadRecord(filename: filename, date: Date()), at: 0)
                 } catch {
                     try? FileManager.default.removeItem(at: fileURL)
-                    self?.status = .failed(error.localizedDescription)
+                    self?.markUploadFailed(id: uploadID, filename: filename, message: error.localizedDescription)
                 }
+            }
+        }
+        server.onUploadFailed = { [weak self] uploadID, filename, message in
+            Task { @MainActor in
+                self?.markUploadFailed(id: uploadID, filename: filename, message: message)
             }
         }
         server.onBooksRequested = { [weak self] completion in
@@ -132,7 +197,60 @@ final class UploadServerController: ObservableObject {
     func stop() {
         server?.stop()
         server = nil
+        activeUploads = []
         status = .stopped
+    }
+
+    private func upsertActiveUpload(from snapshot: LocalUploadServer.UploadTransferSnapshot, phase: ActiveUpload.Phase) {
+        let upload = ActiveUpload(
+            id: snapshot.id,
+            filename: snapshot.filename,
+            startedAt: snapshot.startedAt,
+            receivedBytes: snapshot.receivedBytes,
+            totalBytes: snapshot.totalBytes,
+            phase: phase
+        )
+
+        if let index = activeUploads.firstIndex(where: { $0.id == snapshot.id }) {
+            activeUploads[index] = upload
+        } else {
+            activeUploads.insert(upload, at: 0)
+        }
+    }
+
+    private func setPhase(_ phase: ActiveUpload.Phase, forUploadID uploadID: UUID) {
+        guard let index = activeUploads.firstIndex(where: { $0.id == uploadID }) else {
+            return
+        }
+
+        activeUploads[index].phase = phase
+        if case .importing = phase {
+            activeUploads[index].receivedBytes = activeUploads[index].totalBytes
+        }
+    }
+
+    private func markUploadFailed(id: UUID, filename: String, message: String) {
+        if let index = activeUploads.firstIndex(where: { $0.id == id }) {
+            activeUploads[index].phase = .failed(message)
+            activeUploads[index].filename = filename
+            return
+        }
+
+        activeUploads.insert(
+            ActiveUpload(
+                id: id,
+                filename: filename,
+                startedAt: Date(),
+                receivedBytes: 0,
+                totalBytes: 0,
+                phase: .failed(message)
+            ),
+            at: 0
+        )
+    }
+
+    private func removeActiveUpload(id: UUID) {
+        activeUploads.removeAll { $0.id == id }
     }
 
     private func booksJSON(modelContext: ModelContext) throws -> Data {
