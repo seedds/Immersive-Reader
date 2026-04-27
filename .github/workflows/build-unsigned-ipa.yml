@@ -11,10 +11,10 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Cache Swift packages
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .build/source-packages
           key: ${{ runner.os }}-spm-${{ hashFiles('Immersive Reader.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
@@ -25,7 +25,7 @@ jobs:
         run: bash ./build_unsigned.sh
 
       - name: Upload unsigned IPA artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ImmersiveReader-unsigned-ipa
           path: export/ImmersiveReader-unsigned.ipa
