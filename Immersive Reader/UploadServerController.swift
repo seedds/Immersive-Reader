@@ -157,7 +157,7 @@ final class UploadServerController: ObservableObject {
                         sourceURL: fileURL,
                         filename: filename,
                         source: .upload(uploadID),
-                        existingBookStrategy: .overwrite
+                        existingBookStrategy: .skip
                     )],
                     modelContext: modelContext
                 )

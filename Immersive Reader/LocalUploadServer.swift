@@ -10,12 +10,15 @@ import Network
 
 enum LocalUploadServerError: LocalizedError {
     case invalidPort
+    case portInUse(UInt16)
     case failedToStart(String)
 
     var errorDescription: String? {
         switch self {
         case .invalidPort:
             "The upload server port is invalid."
+        case .portInUse(let port):
+            "Port \(port) is already in use. Stop the other app using it or choose a different port in the Upload tab."
         case .failedToStart(let reason):
             "The upload server failed to start: \(reason)"
         }
@@ -60,10 +63,11 @@ final class LocalUploadServer {
         do {
             let parameters = NWParameters.tcp
             parameters.allowLocalEndpointReuse = true
+            let configuredPort = port
             let listener = try NWListener(using: parameters, on: nwPort)
             listener.stateUpdateHandler = { [weak self] state in
                 if case .failed(let error) = state {
-                    self?.onError?(error.localizedDescription)
+                    self?.onError?(Self.startupError(from: error, port: configuredPort).localizedDescription)
                     self?.stop()
                 }
             }
@@ -73,7 +77,7 @@ final class LocalUploadServer {
             listener.start(queue: queue)
             self.listener = listener
         } catch {
-            throw LocalUploadServerError.failedToStart(error.localizedDescription)
+            throw Self.startupError(from: error, port: port)
         }
     }
 
@@ -109,6 +113,33 @@ final class LocalUploadServer {
         }
 
         uploadConnection.start(queue: queue)
+    }
+
+    private static func startupError(from error: Error, port: UInt16) -> LocalUploadServerError {
+        if isPortInUse(error) {
+            return .portInUse(port)
+        }
+
+        return .failedToStart(error.localizedDescription)
+    }
+
+    private static func isPortInUse(_ error: Error) -> Bool {
+        if let networkError = error as? NWError,
+           case .posix(let code) = networkError,
+           code == .EADDRINUSE {
+            return true
+        }
+
+        let nsError = error as NSError
+        if nsError.domain == NSPOSIXErrorDomain, nsError.code == Int(EADDRINUSE) {
+            return true
+        }
+
+        if let underlyingError = nsError.userInfo[NSUnderlyingErrorKey] as? Error {
+            return isPortInUse(underlyingError)
+        }
+
+        return false
     }
 }
 

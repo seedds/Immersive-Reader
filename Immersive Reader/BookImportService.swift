@@ -58,6 +58,11 @@ enum BookImportService {
         let fingerprint: SourceFileFingerprint
     }
 
+    private struct StagedLibraryFile: Sendable {
+        let fileURL: URL
+        let shouldCleanupOnFailure: Bool
+    }
+
     private struct RefreshPreparation: Sendable {
         let preparedImports: [PreparedBookImport]
         let removedBookIDs: [UUID]
@@ -82,23 +87,23 @@ enum BookImportService {
         }
 
         let existingBook = try existingBook(originalFilename: filename, modelContext: modelContext)
-        if existingBook != nil, existingBookStrategy == .skip {
-            await reportImportProgress(
-                ImportProgress(fractionCompleted: 1, message: "Book already exists, skipping"),
-                using: progressHandler
-            )
-            return nil
-        }
+        let existingBookSnapshot = existingBook.map(snapshot(for:))
 
         let bookID = existingBook?.id ?? UUID()
         let preparedImport = try await Task.detached(priority: .userInitiated) {
             try await prepareImport(
                 from: sourceURL,
                 filename: filename,
+                existingBook: existingBookSnapshot,
+                existingBookStrategy: existingBookStrategy,
                 bookID: bookID,
                 progressHandler: progressHandler
             )
         }.value
+
+        guard let preparedImport else {
+            return nil
+        }
 
         await reportImportProgress(
             ImportProgress(fractionCompleted: 0.96, message: "Saving book..."),
@@ -470,33 +475,30 @@ enum BookImportService {
     nonisolated private static func prepareImport(
         from sourceURL: URL,
         filename: String,
+        existingBook: ExistingBookSnapshot?,
+        existingBookStrategy: ExistingBookStrategy,
         bookID: UUID,
         progressHandler: (@MainActor @Sendable (ImportProgress) -> Void)? = nil
-    ) async throws -> PreparedBookImport {
-        let hasAccess = sourceURL.startAccessingSecurityScopedResource()
-        defer {
-            if hasAccess {
-                sourceURL.stopAccessingSecurityScopedResource()
-            }
+    ) async throws -> PreparedBookImport? {
+        let stagedLibraryFile = try await stageSourceFileInLibrary(
+            from: sourceURL,
+            filename: filename,
+            progressHandler: progressHandler
+        )
+
+        let destinationURL = stagedLibraryFile.fileURL
+        let fingerprint = try sourceFileFingerprint(for: destinationURL)
+        if existingBookStrategy != .overwrite,
+           let existingBook,
+           shouldSkipPreparedBook(for: destinationURL, existingBook: existingBook, fingerprint: fingerprint) {
+            await reportImportProgress(
+                ImportProgress(fractionCompleted: 1, message: "Book already exists, skipping"),
+                using: progressHandler
+            )
+            return nil
         }
 
         let fileManager = FileManager.default
-        let libraryDirectory = try AppStorage.documentsDirectory()
-        let destinationURL = libraryDirectory.appendingPathComponent(filename, isDirectory: false)
-        let sourcePath = sourceURL.standardizedFileURL.path
-        let destinationPath = destinationURL.standardizedFileURL.path
-
-        await reportImportProgress(
-            ImportProgress(fractionCompleted: 0.08, message: "Copying EPUB..."),
-            using: progressHandler
-        )
-
-        if sourcePath != destinationPath {
-            if fileManager.fileExists(atPath: destinationURL.path) {
-                try fileManager.removeItem(at: destinationURL)
-            }
-            try fileManager.copyItem(at: sourceURL, to: destinationURL)
-        }
 
         do {
             await reportImportProgress(
@@ -505,7 +507,6 @@ enum BookImportService {
             )
             try EPUBArchive.validateEPUB(at: destinationURL)
 
-            let fingerprint = try sourceFileFingerprint(for: destinationURL)
             let extractionURL = try AppStorage.extractedDirectory().appendingPathComponent(bookID.uuidString, isDirectory: true)
 
             try? fileManager.removeItem(at: extractionURL)
@@ -517,7 +518,7 @@ enum BookImportService {
                 )
                 try EPUBArchive(url: destinationURL).extract(to: extractionURL)
             } catch {
-                if sourcePath != destinationPath {
+                if stagedLibraryFile.shouldCleanupOnFailure {
                     try? fileManager.removeItem(at: destinationURL)
                 }
                 try? fileManager.removeItem(at: extractionURL)
@@ -554,11 +555,51 @@ enum BookImportService {
                 fingerprint: fingerprint
             )
         } catch {
-            if sourcePath != destinationPath {
+            if stagedLibraryFile.shouldCleanupOnFailure {
                 try? fileManager.removeItem(at: destinationURL)
             }
             throw error
         }
+    }
+
+    nonisolated private static func stageSourceFileInLibrary(
+        from sourceURL: URL,
+        filename: String,
+        progressHandler: (@MainActor @Sendable (ImportProgress) -> Void)? = nil
+    ) async throws -> StagedLibraryFile {
+        let hasAccess = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if hasAccess {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        let fileManager = FileManager.default
+        let libraryDirectory = try AppStorage.documentsDirectory()
+        let destinationURL = libraryDirectory.appendingPathComponent(filename, isDirectory: false)
+        let sourcePath = sourceURL.standardizedFileURL.path
+        let destinationPath = destinationURL.standardizedFileURL.path
+
+        await reportImportProgress(
+            ImportProgress(fractionCompleted: 0.08, message: "Staging EPUB..."),
+            using: progressHandler
+        )
+
+        guard sourcePath != destinationPath else {
+            return StagedLibraryFile(fileURL: destinationURL, shouldCleanupOnFailure: false)
+        }
+
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            try fileManager.removeItem(at: destinationURL)
+        }
+
+        if shouldMoveUploadedSourceIntoLibrary(sourceURL) {
+            try fileManager.moveItem(at: sourceURL, to: destinationURL)
+        } else {
+            try fileManager.copyItem(at: sourceURL, to: destinationURL)
+        }
+
+        return StagedLibraryFile(fileURL: destinationURL, shouldCleanupOnFailure: true)
     }
 
     nonisolated private static func prepareRefresh(
@@ -583,7 +624,7 @@ enum BookImportService {
 
             let fingerprint = try sourceFileFingerprint(for: sourceURL)
             if let existingBook = existingByFilename[filename],
-               shouldSkipRefresh(for: sourceURL, existingBook: existingBook, fingerprint: fingerprint) {
+               shouldSkipPreparedBook(for: sourceURL, existingBook: existingBook, fingerprint: fingerprint) {
                 await reportRefreshProgress(
                     RefreshProgress(
                         fractionCompleted: preparationFraction(processedFileCount: index + 1, totalFileCount: urls.count),
@@ -676,14 +717,13 @@ enum BookImportService {
         return 0.08 + (Double(processedFileCount) / Double(totalFileCount)) * 0.6
     }
 
-    nonisolated private static func shouldSkipRefresh(
-        for sourceURL: URL,
+    nonisolated private static func shouldSkipPreparedBook(
+        for libraryFileURL: URL,
         existingBook: ExistingBookSnapshot,
         fingerprint: SourceFileFingerprint
     ) -> Bool {
         guard fingerprint.fileSize == existingBook.sourceFileSize,
-              fingerprint.modifiedAt == existingBook.sourceFileModifiedAt,
-              existingBook.epubFilePath == sourceURL.path,
+              existingBook.epubFilePath == libraryFileURL.path,
               FileManager.default.fileExists(atPath: existingBook.epubFilePath),
               FileManager.default.fileExists(atPath: existingBook.extractedDirectoryPath)
         else {
@@ -704,6 +744,29 @@ enum BookImportService {
             fileSize: fileSize,
             modifiedAt: resourceValues.contentModificationDate
         )
+    }
+
+    @MainActor
+    private static func snapshot(for book: Book) -> ExistingBookSnapshot {
+        ExistingBookSnapshot(
+            id: book.id,
+            originalFilename: book.originalFilename,
+            epubFilePath: book.epubFilePath,
+            extractedDirectoryPath: book.extractedDirectoryPath,
+            mediaOverlayJSONPath: book.mediaOverlayJSONPath,
+            sourceFileSize: book.sourceFileSize,
+            sourceFileModifiedAt: book.sourceFileModifiedAt
+        )
+    }
+
+    nonisolated private static func shouldMoveUploadedSourceIntoLibrary(_ sourceURL: URL) -> Bool {
+        guard let uploadsDirectory = try? AppStorage.uploadsDirectory() else {
+            return false
+        }
+
+        let sourcePath = sourceURL.standardizedFileURL.path
+        let uploadsPath = uploadsDirectory.standardizedFileURL.path
+        return sourcePath == uploadsPath || sourcePath.hasPrefix(uploadsPath + "/")
     }
 
     private static func displayTitle(for filename: String) -> String {

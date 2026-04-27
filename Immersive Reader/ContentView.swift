@@ -266,10 +266,16 @@ private struct BookRow: View {
                     Text(book.author)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+
+                    if let audioDurationText {
+                        Text(audioDurationText)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                HStack(spacing: 6) {
+                HStack(spacing: 8) {
                     if (book.mediaOverlayClipCount ?? 0) > 0 {
                         Image(systemName: "waveform")
                             .font(.subheadline)
@@ -302,6 +308,23 @@ private struct BookRow: View {
 
         let progress = locator.locations.totalProgression ?? locator.locations.progression ?? 0
         return min(max(progress, 0), 1)
+    }
+
+    private var audioDurationText: String? {
+        guard let duration = book.mediaOverlayDuration, duration > 0 else {
+            return nil
+        }
+
+        let totalSeconds = Int(duration.rounded())
+        let hours = totalSeconds / 3600
+        let minutes = (totalSeconds % 3600) / 60
+        let seconds = totalSeconds % 60
+
+        if hours == 0 {
+            return "\(minutes)m \(seconds)s"
+        }
+
+        return "\(hours)h \(minutes)m \(seconds)s"
     }
 }
 
