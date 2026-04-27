@@ -17,7 +17,7 @@ struct ContentView: View {
 
     var body: some View {
         TabView {
-            BooksView()
+            BooksView(controller: uploadServer)
                 .tabItem {
                     Label("Books", systemImage: "books.vertical")
                 }
@@ -39,6 +39,7 @@ struct ContentView: View {
 private struct BooksView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Book.importedAt, order: .reverse) private var books: [Book]
+    @ObservedObject var controller: UploadServerController
 
     @State private var isImporting = false
     @State private var isRefreshing = false
@@ -64,17 +65,20 @@ private struct BooksView: View {
                 } else {
                     List {
                         ForEach(books) { book in
-                            BookRow(book: book)
+                            BookRow(book: book, showsSeparator: book.id != books.last?.id)
                                 .contentShape(Rectangle())
+                                .listRowInsets(EdgeInsets())
+                                .listRowSeparator(.hidden)
                                 .onTapGesture {
                                     selectedBook = book
                                 }
                         }
                         .onDelete(perform: deleteBooks)
                     }
+                    .listStyle(.plain)
                 }
             }
-            .allowsHitTesting(!isRefreshing)
+            .allowsHitTesting(!isBusy)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
@@ -86,7 +90,7 @@ private struct BooksView: View {
                             Image(systemName: "arrow.clockwise")
                         }
                     }
-                    .disabled(isRefreshing)
+                    .disabled(isBusy)
                     .accessibilityLabel("Refresh Books")
                 }
 
@@ -96,7 +100,7 @@ private struct BooksView: View {
                     } label: {
                         Label("Import EPUB", systemImage: "plus")
                     }
-                    .disabled(isRefreshing)
+                    .disabled(isBusy)
                 }
             }
             .fileImporter(
@@ -108,17 +112,18 @@ private struct BooksView: View {
             .alert(
                 "Import Failed",
                 isPresented: Binding(
-                    get: { importError != nil },
+                    get: { importError != nil || controller.manualImportErrorMessage != nil },
                     set: { isPresented in
                         if !isPresented {
                             importError = nil
+                            controller.clearManualImportError()
                         }
                     }
                 )
             ) {
                 Button("OK", role: .cancel) {}
             } message: {
-                Text(importError ?? "Unknown error")
+                Text(controller.manualImportErrorMessage ?? importError ?? "Unknown error")
             }
             .navigationDestination(item: $selectedBook) { book in
                 ReaderView(book: book)
@@ -126,6 +131,8 @@ private struct BooksView: View {
             .overlay {
                 if isRefreshing {
                     refreshOverlay
+                } else if controller.isImportingBooks {
+                    importOverlay
                 }
             }
         }
@@ -134,7 +141,7 @@ private struct BooksView: View {
     private func handleImport(_ result: Result<[URL], Error>) {
         do {
             let urls = try result.get()
-            try BookImportService.importBooks(from: urls, modelContext: modelContext)
+            controller.importBooks(from: urls, modelContext: modelContext)
         } catch {
             importError = error.localizedDescription
         }
@@ -181,19 +188,46 @@ private struct BooksView: View {
 
     @ViewBuilder
     private var refreshOverlay: some View {
+        progressOverlay(
+            primaryText: refreshStatus,
+            secondaryText: nil,
+            progress: refreshProgress
+        )
+    }
+
+    @ViewBuilder
+    private var importOverlay: some View {
+        progressOverlay(
+            primaryText: controller.currentImportFilename ?? "Importing EPUB...",
+            secondaryText: [controller.importStatus, controller.currentImportCountText]
+                .compactMap { $0 }
+                .joined(separator: "\n"),
+            progress: controller.importProgress
+        )
+    }
+
+    @ViewBuilder
+    private func progressOverlay(primaryText: String, secondaryText: String?, progress: Double) -> some View {
         ZStack {
             Color.black.opacity(0.18)
                 .ignoresSafeArea()
 
             VStack(spacing: 14) {
-                ProgressView(value: refreshProgress)
+                ProgressView(value: progress)
                     .tint(.accentColor)
 
-                Text(refreshStatus)
+                Text(primaryText)
                     .font(.headline)
                     .multilineTextAlignment(.center)
 
-                Text("\(Int(refreshProgress * 100))%")
+                if let secondaryText, !secondaryText.isEmpty {
+                    Text(secondaryText)
+                        .font(.subheadline)
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.secondary)
+                }
+
+                Text("\(Int(progress * 100))%")
                     .font(.subheadline)
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
@@ -210,40 +244,53 @@ private struct BooksView: View {
         }
     }
 
+    private var isBusy: Bool {
+        isRefreshing || controller.isImportingBooks
+    }
+
 }
 
 private struct BookRow: View {
     let book: Book
+    let showsSeparator: Bool
 
     var body: some View {
-        HStack(spacing: 14) {
-            BookCoverView(book: book)
+        VStack(spacing: 0) {
+            HStack(spacing: 14) {
+                BookCoverView(book: book)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(book.title)
-                    .font(.headline)
-                    .lineLimit(1)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(book.title)
+                        .font(.headline)
 
-                Text(book.author)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 0)
-
-            HStack(spacing: 10) {
-                if (book.mediaOverlayClipCount ?? 0) > 0 {
-                    Image(systemName: "waveform")
-                        .font(.subheadline)
-                        .foregroundStyle(.green)
-                        .accessibilityLabel("Read aloud ready")
+                    Text(book.author)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-                BookProgressRing(progress: readingProgress)
+                HStack(spacing: 6) {
+                    if (book.mediaOverlayClipCount ?? 0) > 0 {
+                        Image(systemName: "waveform")
+                            .font(.subheadline)
+                            .foregroundStyle(.green)
+                            .accessibilityLabel("Read aloud ready")
+                    }
+
+                    BookProgressRing(progress: readingProgress)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+
+            if showsSeparator {
+                Rectangle()
+                    .fill(Color(uiColor: .separator))
+                    .frame(height: 1)
             }
         }
-        .padding(.vertical, 2)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var readingProgress: Double {
@@ -263,16 +310,13 @@ private struct BookProgressRing: View {
 
     var body: some View {
         ZStack {
-            Circle()
-                .fill(.quaternary)
-
             ProgressPieSlice(progress: progress)
                 .fill(Color.accentColor)
         }
         .frame(width: 18, height: 18)
         .overlay {
             Circle()
-                .stroke(.black.opacity(0.08), lineWidth: 0.5)
+                .stroke(Color.accentColor, lineWidth: 1)
         }
         .accessibilityElement()
         .accessibilityLabel("Reading progress")
@@ -339,7 +383,10 @@ private struct BookCoverView: View {
 
 private struct UploadView: View {
     @Environment(\.modelContext) private var modelContext
+    @SwiftUI.AppStorage(ReaderSettings.uploadServerPortKey) private var uploadServerPort = ReaderSettings.defaultUploadServerPort
     @ObservedObject var controller: UploadServerController
+    @FocusState private var isPortFieldFocused: Bool
+    @State private var portText = ""
 
     var body: some View {
         NavigationStack {
@@ -347,11 +394,22 @@ private struct UploadView: View {
                 Section("Server") {
                     LabeledContent("Status", value: controller.status.title)
 
+                    HStack {
+                        Text("Port")
+
+                        Spacer()
+
+                        TextField("80", text: $portText)
+                            .keyboardType(.numberPad)
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 88)
+                            .focused($isPortFieldFocused)
+                            .disabled(controller.status == .running)
+                    }
+
+
                     if let serverURL = controller.serverURL {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("Open this address on another computer on the same Wi-Fi network:")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
                             Text(serverURL.absoluteString)
                                 .font(.system(.body, design: .monospaced))
                                 .textSelection(.enabled)
@@ -363,10 +421,12 @@ private struct UploadView: View {
                     }
 
                     Button {
+                        commitPortText()
                         switch controller.status {
                         case .running:
                             controller.stop()
                         case .stopped, .failed:
+                            controller.port = ReaderSettings.uploadServerPort(from: uploadServerPort)
                             controller.start(modelContext: modelContext)
                         }
                     } label: {
@@ -383,8 +443,6 @@ private struct UploadView: View {
 
                 Section("Storage") {
                     Text("Uploaded EPUBs are stored directly in the app's Documents folder and should appear in Files under On My iPhone/ImmersiveReader.")
-                    Text("Keep the app open while uploading. iOS may suspend local networking in the background.")
-                        .foregroundStyle(.secondary)
                 }
 
                 if !controller.activeUploads.isEmpty {
@@ -448,6 +506,38 @@ private struct UploadView: View {
                 }
             }
             .navigationTitle("Upload")
+            .onAppear {
+                syncPortText()
+            }
+            .onChange(of: isPortFieldFocused) { _, isFocused in
+                if !isFocused {
+                    commitPortText()
+                }
+            }
+            .onChange(of: uploadServerPort) { _, _ in
+                syncPortText()
+            }
+        }
+    }
+
+    private func syncPortText() {
+        let normalizedPort = ReaderSettings.normalizedUploadServerPort(uploadServerPort)
+        if uploadServerPort != normalizedPort {
+            uploadServerPort = normalizedPort
+        }
+        portText = "\(normalizedPort)"
+        if controller.status != .running {
+            controller.port = ReaderSettings.uploadServerPort(from: normalizedPort)
+        }
+    }
+
+    private func commitPortText() {
+        let digits = String(portText.filter(\.isNumber))
+        let normalizedPort = ReaderSettings.normalizedUploadServerPort(Int(digits) ?? ReaderSettings.defaultUploadServerPort)
+        uploadServerPort = normalizedPort
+        portText = "\(normalizedPort)"
+        if controller.status != .running {
+            controller.port = ReaderSettings.uploadServerPort(from: normalizedPort)
         }
     }
 
@@ -487,7 +577,7 @@ private struct SettingsView: View {
         NavigationStack {
             Form {
                 Section("Reader") {
-                    VStack(alignment: .leading, spacing: 6) {
+                    VStack(alignment: .leading, spacing: 2) {
                         HStack {
                             Text("Font Size")
                             Spacer()
@@ -505,7 +595,7 @@ private struct SettingsView: View {
                         )
                     }
 
-                    VStack(alignment: .leading, spacing: 6) {
+                    VStack(alignment: .leading, spacing: 2) {
                         HStack {
                             Text("Playback Speed")
                             Spacer()
@@ -564,41 +654,8 @@ private struct SettingsView: View {
                     }
                 }
 
-                Section("Preview") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("The quick brown fox jumps over the lazy dog.\nPack my box with five dozen liquor jugs.")
-                            .font(.system(size: previewFontSize))
-
-                        Text("Read aloud sample")
-                            .font(.footnote.weight(.medium))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background {
-                                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .fill(ReaderSettings.color(from: readAloudColorRawValue).opacity(0.35))
-                            }
-
-                        Text("\(selectedFontFamilyName) • \(selectedAppTheme.name)")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.vertical, 4)
-                    .preferredColorScheme(selectedAppTheme.preferredColorScheme)
-                }
             }
         }
-    }
-
-    private var selectedFontFamilyName: String {
-        ReaderSettings.fontFamilyOptions.first(where: { $0.id == fontFamilyRawValue })?.name ?? "Default"
-    }
-
-    private var selectedAppTheme: AppThemeOption {
-        ReaderSettings.appTheme(from: themeRawValue)
-    }
-
-    private var previewFontSize: Double {
-        17 * ReaderSettings.normalizedFontSize(fontSize)
     }
 }
 

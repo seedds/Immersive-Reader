@@ -46,14 +46,12 @@ final class MediaOverlayPlaybackController: ObservableObject {
     }
 
     func load(from jsonPath: String?) {
-        logPlaybackEvent("load.begin", extra: "jsonPath=\(jsonPath ?? "nil")")
         stop(reason: "load")
 
         guard let jsonPath else {
             state = .unavailable
             clips = []
             currentClipIndex = nil
-            logPlaybackEvent("load.noManifest")
             return
         }
 
@@ -65,16 +63,10 @@ final class MediaOverlayPlaybackController: ObservableObject {
             }
             currentClipIndex = nil
             state = clips.isEmpty ? .unavailable : .ready
-            logPlaybackEvent(
-                "load.completed",
-                clip: currentClip,
-                extra: "clipCount=\(clips.count) currentClipIndex=\(String(describing: currentClipIndex)) state=\(String(describing: state))"
-            )
         } catch {
             clips = []
             currentClipIndex = nil
             state = .failed(error.localizedDescription)
-            logPlaybackEvent("load.failed", extra: "error=\(error.localizedDescription)")
         }
     }
 
@@ -89,7 +81,6 @@ final class MediaOverlayPlaybackController: ObservableObject {
     func play(reason: String = "directPlay") {
         guard !clips.isEmpty else {
             state = .unavailable
-            logPlaybackEvent("play.aborted", reason: reason, extra: "state=\(String(describing: state)) clipCount=0")
             return
         }
 
@@ -99,30 +90,15 @@ final class MediaOverlayPlaybackController: ObservableObject {
 
         guard let clip = currentClip else {
             state = .unavailable
-            logPlaybackEvent("play.aborted", reason: reason, extra: "state=\(String(describing: state)) currentClipIndex=nil")
             return
         }
 
         let transitionID = nextPlaybackTransitionID()
         currentTransitionID = transitionID
-        logPlaybackEvent(
-            "play",
-            clip: clip,
-            reason: reason,
-            transitionID: transitionID,
-            extra: "currentClipIndex=\(String(describing: currentClipIndex)) state=\(String(describing: state)) \(playerSnapshot())"
-        )
         start(clip, reason: reason, transitionID: transitionID)
     }
 
     func pause(reason: String = "directPause") {
-        logPlaybackEvent(
-            "pause",
-            clip: currentClip,
-            reason: reason,
-            transitionID: currentTransitionID,
-            extra: "currentClipIndex=\(String(describing: currentClipIndex)) \(playerSnapshot())"
-        )
         player?.pause()
         deactivateAudioSession(reason: "pause[\(reason)]")
         currentTransitionID = nil
@@ -134,13 +110,6 @@ final class MediaOverlayPlaybackController: ObservableObject {
     }
 
     func stop(reason: String = "directStop") {
-        logPlaybackEvent(
-            "stop",
-            clip: currentClip,
-            reason: reason,
-            transitionID: currentTransitionID,
-            extra: "currentClipIndex=\(String(describing: currentClipIndex)) \(playerSnapshot())"
-        )
         player?.pause()
         removeObservers(reason: "stop[\(reason)]")
         player = nil
@@ -153,16 +122,8 @@ final class MediaOverlayPlaybackController: ObservableObject {
 
     func previousClip(reason: String = "manualPrevious") {
         guard let currentClipIndex, currentClipIndex > 0 else {
-            logPlaybackEvent("previousClip.ignored", clip: currentClip, reason: reason, transitionID: currentTransitionID)
             return
         }
-        logPlaybackEvent(
-            "previousClip",
-            clip: currentClip,
-            reason: reason,
-            transitionID: currentTransitionID,
-            extra: "fromIndex=\(currentClipIndex) toIndex=\(currentClipIndex - 1)"
-        )
         self.currentClipIndex = currentClipIndex - 1
         if state.isPlaying {
             play(reason: "previousClip[\(reason)]")
@@ -171,30 +132,20 @@ final class MediaOverlayPlaybackController: ObservableObject {
 
     func nextClip(reason: String = "manualNext") {
         guard let currentClipIndex else {
-            logPlaybackEvent("nextClip.ignored", reason: reason, transitionID: currentTransitionID, extra: "currentClipIndex=nil")
             return
         }
 
         guard let currentClip = currentClip else {
-            logPlaybackEvent("nextClip.ignored", reason: reason, transitionID: currentTransitionID, extra: "currentClip=nil")
             return
         }
 
         let nextIndex = clips.index(after: currentClipIndex)
-        logPlaybackEvent(
-            "nextClip",
-            clip: currentClip,
-            reason: reason,
-            transitionID: currentTransitionID,
-            extra: "fromIndex=\(currentClipIndex) candidateNextIndex=\(nextIndex) isPlaying=\(state.isPlaying) \(playerSnapshot())"
-        )
         guard clips.indices.contains(nextIndex) else {
             player?.pause()
             removeObservers(reason: "nextClip.noNext[\(reason)]")
             deactivateAudioSession(reason: "nextClip.noNext[\(reason)]")
             currentTransitionID = nil
             state = .ready
-            logPlaybackEvent("nextClip.reachedEnd", clip: currentClip, reason: reason, extra: "fromIndex=\(currentClipIndex)")
             return
         }
 
@@ -217,17 +168,8 @@ final class MediaOverlayPlaybackController: ObservableObject {
 
     func selectClip(at index: Int, autoplay: Bool, reason: String = "directSelect") {
         guard clips.indices.contains(index) else {
-            logPlaybackEvent("selectClip.ignored", reason: reason, transitionID: currentTransitionID, extra: "targetIndex=\(index) clipCount=\(clips.count)")
             return
         }
-
-        logPlaybackEvent(
-            "selectClip",
-            clip: clips[index],
-            reason: reason,
-            transitionID: currentTransitionID,
-            extra: "targetIndex=\(index) autoplay=\(autoplay) previousIndex=\(String(describing: currentClipIndex)) \(playerSnapshot())"
-        )
         player?.pause()
         removeObservers(reason: "selectClip[\(reason)]")
         deactivateAudioSession(reason: "selectClip[\(reason)]")
@@ -245,30 +187,16 @@ final class MediaOverlayPlaybackController: ObservableObject {
     func setPlaybackRate(_ rate: Double) {
         let normalizedRate = ReaderSettings.normalizedPlaybackSpeed(rate)
         playbackRate = normalizedRate
-        logPlaybackEvent(
-            "setPlaybackRate",
-            clip: currentClip,
-            transitionID: currentTransitionID,
-            extra: "playbackRate=\(formattedSeconds(normalizedRate)) state=\(String(describing: state))"
-        )
         applyPlaybackRateIfNeeded(shouldUpdateActiveRate: state.isPlaying, reason: "setPlaybackRate")
     }
 
     private func start(_ clip: EPUBMediaOverlayClip, reason: String, transitionID: Int) {
-        logPlaybackEvent(
-            "start",
-            clip: clip,
-            reason: reason,
-            transitionID: transitionID,
-            extra: "currentClipIndex=\(String(describing: currentClipIndex)) loadedAudioPath=\(loadedAudioPath ?? "nil") \(playerSnapshot())"
-        )
         removeObservers(reason: "start[\(reason)]")
 
         do {
             try configureAudioSession()
         } catch {
             state = .failed(error.localizedDescription)
-            logPlaybackEvent("start.failedAudioSession", clip: clip, reason: reason, transitionID: transitionID, extra: "error=\(error.localizedDescription)")
             return
         }
 
@@ -278,34 +206,13 @@ final class MediaOverlayPlaybackController: ObservableObject {
             guard let self else { return }
             DispatchQueue.main.async {
                 guard self.isCurrentClip(clip) else {
-                    self.logPlaybackEvent(
-                        "seekCompleted.ignoredStaleClip",
-                        clip: clip,
-                        reason: reason,
-                        transitionID: transitionID,
-                        extra: "currentClipIndex=\(String(describing: self.currentClipIndex)) currentTransitionID=\(String(describing: self.currentTransitionID)) \(self.playerSnapshot())"
-                    )
                     return
                 }
 
                 guard self.currentTransitionID == transitionID else {
-                    self.logPlaybackEvent(
-                        "seekCompleted.ignoredStaleTransition",
-                        clip: clip,
-                        reason: reason,
-                        transitionID: transitionID,
-                        extra: "currentTransitionID=\(String(describing: self.currentTransitionID)) currentClipIndex=\(String(describing: self.currentClipIndex)) \(self.playerSnapshot())"
-                    )
                     return
                 }
 
-                self.logPlaybackEvent(
-                    "seekCompleted",
-                    clip: clip,
-                    reason: reason,
-                    transitionID: transitionID,
-                    extra: "currentClipIndex=\(String(describing: self.currentClipIndex)) \(self.playerSnapshot())"
-                )
                 self.addObservers(for: clip, reason: reason, transitionID: transitionID)
                 player.play()
                 self.state = .playing
@@ -315,13 +222,6 @@ final class MediaOverlayPlaybackController: ObservableObject {
                     reason: "start[\(reason)]",
                     transitionID: transitionID
                 )
-                self.logPlaybackEvent(
-                    "player.playInvoked",
-                    clip: clip,
-                    reason: reason,
-                    transitionID: transitionID,
-                    extra: "currentClipIndex=\(String(describing: self.currentClipIndex)) playbackRate=\(formattedSeconds(self.playbackRate)) \(self.playerSnapshot())"
-                )
             }
         }
     }
@@ -330,7 +230,6 @@ final class MediaOverlayPlaybackController: ObservableObject {
         if let player,
            loadedAudioPath == clip.audioPath,
            player.currentItem != nil {
-            logPlaybackEvent("preparedPlayer.reuseCurrentItem", clip: clip, transitionID: currentTransitionID, extra: playerSnapshot(player: player))
             return player
         }
 
@@ -338,13 +237,11 @@ final class MediaOverlayPlaybackController: ObservableObject {
         item.audioTimePitchAlgorithm = .timeDomain
 
         if let player {
-            logPlaybackEvent("preparedPlayer.replaceCurrentItem", clip: clip, transitionID: currentTransitionID, extra: playerSnapshot(player: player))
             player.replaceCurrentItem(with: item)
             loadedAudioPath = clip.audioPath
             return player
         }
 
-        logPlaybackEvent("preparedPlayer.createPlayer", clip: clip, transitionID: currentTransitionID)
         let player = AVPlayer(playerItem: item)
         self.player = player
         loadedAudioPath = clip.audioPath
@@ -368,13 +265,6 @@ final class MediaOverlayPlaybackController: ObservableObject {
         }
 
         player.rate = Float(playbackRate)
-        logPlaybackEvent(
-            "applyPlaybackRate",
-            clip: currentClip,
-            reason: reason,
-            transitionID: transitionID ?? currentTransitionID,
-            extra: "playbackRate=\(formattedSeconds(playbackRate)) \(playerSnapshot(player: player))"
-        )
     }
 
     private func isCurrentClip(_ clip: EPUBMediaOverlayClip) -> Bool {
@@ -393,45 +283,23 @@ final class MediaOverlayPlaybackController: ObservableObject {
         guard let player else { return }
 
         if let clipEnd = clip.clipEnd, clipEnd > clip.clipBegin {
-            logPlaybackEvent(
-                "addBoundaryObserver",
-                clip: clip,
-                reason: reason,
-                transitionID: transitionID,
-                extra: "clipEnd=\(clipEnd) observerTime=\(formattedSeconds(clipEnd))"
-            )
             boundaryObserver = player.addBoundaryTimeObserver(
                 forTimes: [NSValue(time: CMTime(seconds: clipEnd, preferredTimescale: 600))],
                 queue: .main
             ) { [weak self] in
                 Task { @MainActor [weak self] in
-                    self?.logPlaybackEvent(
-                        "boundaryObserverFired",
-                        clip: clip,
-                        reason: reason,
-                        transitionID: transitionID,
-                        extra: self?.playerSnapshot() ?? "player=nil"
-                    )
                     self?.nextClip(reason: "boundaryObserver transitionID=\(transitionID)")
                 }
             }
         }
 
         if clip.clipEnd == nil, let item = player.currentItem {
-            logPlaybackEvent("addItemEndObserver", clip: clip, reason: reason, transitionID: transitionID)
             endObserver = NotificationCenter.default.addObserver(
                 forName: .AVPlayerItemDidPlayToEndTime,
                 object: item,
                 queue: .main
             ) { [weak self] _ in
                 Task { @MainActor [weak self] in
-                    self?.logPlaybackEvent(
-                        "itemEndObserverFired",
-                        clip: clip,
-                        reason: reason,
-                        transitionID: transitionID,
-                        extra: self?.playerSnapshot() ?? "player=nil"
-                    )
                     self?.nextClip(reason: "itemEndObserver transitionID=\(transitionID)")
                 }
             }
@@ -439,16 +307,6 @@ final class MediaOverlayPlaybackController: ObservableObject {
     }
 
     private func removeObservers(reason: String) {
-        if boundaryObserver != nil || endObserver != nil {
-            logPlaybackEvent(
-                "removeObservers",
-                clip: currentClip,
-                reason: reason,
-                transitionID: currentTransitionID,
-                extra: "hadBoundaryObserver=\(boundaryObserver != nil) hadEndObserver=\(endObserver != nil)"
-            )
-        }
-
         if let boundaryObserver, let player {
             player.removeTimeObserver(boundaryObserver)
         }
@@ -491,13 +349,6 @@ final class MediaOverlayPlaybackController: ObservableObject {
 
         let transitionID = nextPlaybackTransitionID()
         currentTransitionID = transitionID
-        logPlaybackEvent(
-            "continueSameAudioWithoutSeek",
-            clip: nextClip,
-            reason: reason,
-            transitionID: transitionID,
-            extra: "fromIndex=\(fromIndex) toIndex=\(toIndex) currentTime=\(formattedSeconds(currentTime)) boundaryDelta=\(formattedSeconds(currentTime - nextClip.clipBegin))"
-        )
         addObservers(for: nextClip, reason: "continueSameAudioWithoutSeek[\(reason)]", transitionID: transitionID)
         state = .playing
         return true
@@ -507,39 +358,6 @@ final class MediaOverlayPlaybackController: ObservableObject {
         reason.hasPrefix("boundaryObserver") || reason.hasPrefix("itemEndObserver")
     }
 
-    private func logPlaybackEvent(
-        _ event: String,
-        clip: EPUBMediaOverlayClip? = nil,
-        reason: String? = nil,
-        transitionID: Int? = nil,
-        extra: String? = nil
-    ) {
-        var parts: [String] = ["[Playback \(PlaybackDiagnostics.timestamp())] \(event)"]
-
-        if let reason {
-            parts.append("reason=\(reason)")
-        }
-
-        if let transitionID {
-            parts.append("transitionID=\(transitionID)")
-        }
-
-        if let clip {
-            let audioName = URL(fileURLWithPath: clip.audioPath).lastPathComponent
-            parts.append(
-                "clip(fragment=\(clip.fragmentID ?? "nil") href=\(clip.textResourceHref) begin=\(formattedSeconds(clip.clipBegin)) end=\(formattedOptionalSeconds(clip.clipEnd)) audio=\(audioName))"
-            )
-        } else {
-            parts.append("clip=nil")
-        }
-
-        if let extra {
-            parts.append(extra)
-        }
-
-        print(parts.joined(separator: " | "))
-    }
-
     private func configureAudioSession() throws {
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.playback, mode: .default)
@@ -547,45 +365,12 @@ final class MediaOverlayPlaybackController: ObservableObject {
     }
 
     private func deactivateAudioSession(reason: String) {
-        logPlaybackEvent("deactivateAudioSession", clip: currentClip, reason: reason, transitionID: currentTransitionID)
         try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
     }
 
     private func nextPlaybackTransitionID() -> Int {
         Self.nextTransitionID += 1
         return Self.nextTransitionID
-    }
-
-    private func playerSnapshot(player: AVPlayer? = nil) -> String {
-        guard let player = player ?? self.player else {
-            return "player=nil"
-        }
-
-        let timeControlStatus: String
-        switch player.timeControlStatus {
-        case .paused:
-            timeControlStatus = "paused"
-        case .waitingToPlayAtSpecifiedRate:
-            timeControlStatus = "waiting"
-        case .playing:
-            timeControlStatus = "playing"
-        @unknown default:
-            timeControlStatus = "unknown"
-        }
-
-        let itemStatus: String
-        switch player.currentItem?.status {
-        case .readyToPlay:
-            itemStatus = "readyToPlay"
-        case .failed:
-            itemStatus = "failed"
-        case .unknown, .none:
-            itemStatus = "unknown"
-        @unknown default:
-            itemStatus = "unknownFuture"
-        }
-
-        return "playerTime=\(formattedTime(player.currentTime())) rate=\(formattedSeconds(Double(player.rate))) timeControlStatus=\(timeControlStatus) itemStatus=\(itemStatus) loadedAudioPath=\(loadedAudioPath ?? "nil")"
     }
 
     deinit {
@@ -601,24 +386,4 @@ final class MediaOverlayPlaybackController: ObservableObject {
             }
         }
     }
-}
-
-enum PlaybackDiagnostics {
-    static func timestamp() -> String {
-        formattedSeconds(Date().timeIntervalSince1970)
-    }
-}
-
-private func formattedOptionalSeconds(_ value: Double?) -> String {
-    guard let value else { return "nil" }
-    return formattedSeconds(value)
-}
-
-private func formattedTime(_ value: CMTime) -> String {
-    formattedSeconds(value.seconds)
-}
-
-private func formattedSeconds(_ value: Double) -> String {
-    guard value.isFinite else { return "nan" }
-    return String(format: "%.3f", value)
 }

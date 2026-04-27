@@ -16,9 +16,11 @@ nonisolated enum ReaderSettings {
     static let themeKey = "readerTheme"
     static let readAloudColorKey = "readerReadAloudColor"
     static let playbackSpeedKey = "readerPlaybackSpeed"
+    static let uploadServerPortKey = "uploadServerPort"
     static let defaultFontSize = 1.2
     static let defaultReadAloudColorHex = "#34C759"
     static let defaultPlaybackSpeed = 1.0
+    static let defaultUploadServerPort = 80
     static let fontSizeRange = 0.8 ... 2.0
     static let playbackSpeedRange = 0.5 ... 2.0
     static let fontSizeStep = 0.1
@@ -54,6 +56,22 @@ nonisolated enum ReaderSettings {
 
     static func normalizedPlaybackSpeed(_ value: Double) -> Double {
         min(max(value, playbackSpeedRange.lowerBound), playbackSpeedRange.upperBound)
+    }
+
+    static func normalizedUploadServerPort(_ value: Int) -> Int {
+        min(max(value, 1), Int(UInt16.max))
+    }
+
+    static func uploadServerPort(from value: Int) -> UInt16 {
+        UInt16(normalizedUploadServerPort(value))
+    }
+
+    static func storedUploadServerPort() -> UInt16 {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: uploadServerPortKey) != nil else {
+            return uploadServerPort(from: defaultUploadServerPort)
+        }
+        return uploadServerPort(from: defaults.integer(forKey: uploadServerPortKey))
     }
 
     static func playbackSpeedText(_ value: Double) -> String {

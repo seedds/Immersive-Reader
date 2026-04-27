@@ -20,6 +20,11 @@ enum BookImportError: LocalizedError {
 }
 
 enum BookImportService {
+    struct ImportProgress: Sendable {
+        let fractionCompleted: Double
+        let message: String
+    }
+
     struct RefreshProgress: Sendable {
         let fractionCompleted: Double
         let message: String
@@ -61,6 +66,56 @@ enum BookImportService {
     enum ExistingBookStrategy {
         case skip
         case overwrite
+    }
+
+    @MainActor
+    @discardableResult
+    static func importBook(
+        from sourceURL: URL,
+        modelContext: ModelContext,
+        existingBookStrategy: ExistingBookStrategy = .skip,
+        progressHandler: (@MainActor @Sendable (ImportProgress) -> Void)? = nil
+    ) async throws -> Book? {
+        let filename = AppStorage.sanitizedFilename(sourceURL.lastPathComponent)
+        guard filename.lowercased().hasSuffix(".epub") else {
+            throw BookImportError.notEpub(filename)
+        }
+
+        let existingBook = try existingBook(originalFilename: filename, modelContext: modelContext)
+        if existingBook != nil, existingBookStrategy == .skip {
+            await reportImportProgress(
+                ImportProgress(fractionCompleted: 1, message: "Book already exists, skipping"),
+                using: progressHandler
+            )
+            return nil
+        }
+
+        let bookID = existingBook?.id ?? UUID()
+        let preparedImport = try await Task.detached(priority: .userInitiated) {
+            try await prepareImport(
+                from: sourceURL,
+                filename: filename,
+                bookID: bookID,
+                progressHandler: progressHandler
+            )
+        }.value
+
+        await reportImportProgress(
+            ImportProgress(fractionCompleted: 0.96, message: "Saving book..."),
+            using: progressHandler
+        )
+
+        let book = try applyPreparedImport(
+            preparedImport,
+            existingBookID: existingBook?.id,
+            modelContext: modelContext
+        )
+
+        await reportImportProgress(
+            ImportProgress(fractionCompleted: 1, message: "Import complete"),
+            using: progressHandler
+        )
+        return book
     }
 
     @discardableResult
@@ -350,6 +405,162 @@ enum BookImportService {
         return try modelContext.fetch(descriptor).first
     }
 
+    @MainActor
+    private static func bookForID(_ id: UUID, modelContext: ModelContext) throws -> Book? {
+        var descriptor = FetchDescriptor<Book>(
+            predicate: #Predicate { book in
+                book.id == id
+            }
+        )
+        descriptor.fetchLimit = 1
+        return try modelContext.fetch(descriptor).first
+    }
+
+    @MainActor
+    private static func applyPreparedImport(
+        _ preparedImport: PreparedBookImport,
+        existingBookID: UUID?,
+        modelContext: ModelContext
+    ) throws -> Book {
+        let book: Book
+        if let existingBookID,
+           let existingBook = try bookForID(existingBookID, modelContext: modelContext) {
+            existingBook.title = preparedImport.metadata.title ?? displayTitle(for: preparedImport.filename)
+            existingBook.author = preparedImport.metadata.author ?? "Unknown Author"
+            existingBook.originalFilename = preparedImport.filename
+            existingBook.epubFilePath = preparedImport.epubFilePath
+            existingBook.extractedDirectoryPath = preparedImport.extractedDirectoryPath
+            existingBook.coverImagePath = preparedImport.metadata.coverImagePath
+            existingBook.language = preparedImport.metadata.language
+            existingBook.metadataIdentifier = preparedImport.metadata.identifier
+            existingBook.mediaOverlayJSONPath = preparedImport.mediaOverlayJSONPath
+            existingBook.mediaOverlayActiveClass = preparedImport.mediaOverlayActiveClass
+            existingBook.mediaOverlayDuration = preparedImport.mediaOverlayDuration
+            existingBook.mediaOverlayClipCount = preparedImport.mediaOverlayClipCount
+            existingBook.sourceFileSize = preparedImport.fingerprint.fileSize
+            existingBook.sourceFileModifiedAt = preparedImport.fingerprint.modifiedAt
+            existingBook.importedAt = Date()
+            book = existingBook
+        } else {
+            let newBook = Book(
+                id: preparedImport.id,
+                title: preparedImport.metadata.title ?? displayTitle(for: preparedImport.filename),
+                author: preparedImport.metadata.author ?? "Unknown Author",
+                originalFilename: preparedImport.filename,
+                epubFilePath: preparedImport.epubFilePath,
+                extractedDirectoryPath: preparedImport.extractedDirectoryPath,
+                coverImagePath: preparedImport.metadata.coverImagePath,
+                language: preparedImport.metadata.language,
+                metadataIdentifier: preparedImport.metadata.identifier,
+                mediaOverlayJSONPath: preparedImport.mediaOverlayJSONPath,
+                mediaOverlayActiveClass: preparedImport.mediaOverlayActiveClass,
+                mediaOverlayDuration: preparedImport.mediaOverlayDuration,
+                mediaOverlayClipCount: preparedImport.mediaOverlayClipCount,
+                sourceFileSize: preparedImport.fingerprint.fileSize,
+                sourceFileModifiedAt: preparedImport.fingerprint.modifiedAt
+            )
+            modelContext.insert(newBook)
+            book = newBook
+        }
+
+        try modelContext.save()
+        return book
+    }
+
+    nonisolated private static func prepareImport(
+        from sourceURL: URL,
+        filename: String,
+        bookID: UUID,
+        progressHandler: (@MainActor @Sendable (ImportProgress) -> Void)? = nil
+    ) async throws -> PreparedBookImport {
+        let hasAccess = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if hasAccess {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        let fileManager = FileManager.default
+        let libraryDirectory = try AppStorage.documentsDirectory()
+        let destinationURL = libraryDirectory.appendingPathComponent(filename, isDirectory: false)
+        let sourcePath = sourceURL.standardizedFileURL.path
+        let destinationPath = destinationURL.standardizedFileURL.path
+
+        await reportImportProgress(
+            ImportProgress(fractionCompleted: 0.08, message: "Copying EPUB..."),
+            using: progressHandler
+        )
+
+        if sourcePath != destinationPath {
+            if fileManager.fileExists(atPath: destinationURL.path) {
+                try fileManager.removeItem(at: destinationURL)
+            }
+            try fileManager.copyItem(at: sourceURL, to: destinationURL)
+        }
+
+        do {
+            await reportImportProgress(
+                ImportProgress(fractionCompleted: 0.24, message: "Validating EPUB..."),
+                using: progressHandler
+            )
+            try EPUBArchive.validateEPUB(at: destinationURL)
+
+            let fingerprint = try sourceFileFingerprint(for: destinationURL)
+            let extractionURL = try AppStorage.extractedDirectory().appendingPathComponent(bookID.uuidString, isDirectory: true)
+
+            try? fileManager.removeItem(at: extractionURL)
+
+            do {
+                await reportImportProgress(
+                    ImportProgress(fractionCompleted: 0.46, message: "Extracting book..."),
+                    using: progressHandler
+                )
+                try EPUBArchive(url: destinationURL).extract(to: extractionURL)
+            } catch {
+                if sourcePath != destinationPath {
+                    try? fileManager.removeItem(at: destinationURL)
+                }
+                try? fileManager.removeItem(at: extractionURL)
+                throw error
+            }
+
+            await reportImportProgress(
+                ImportProgress(fractionCompleted: 0.82, message: "Reading metadata..."),
+                using: progressHandler
+            )
+            let package = EPUBMetadataService.packageInfo(in: extractionURL)
+            let metadata = package.map { EPUBMetadataService.metadata(in: extractionURL, package: $0) } ?? EPUBMetadata()
+            let mediaOverlay: EPUBMediaOverlayParseResult?
+            if let package {
+                mediaOverlay = try? EPUBMediaOverlayService.parseAndWrite(in: extractionURL, package: package)
+            } else {
+                mediaOverlay = nil
+            }
+
+            await reportImportProgress(
+                ImportProgress(fractionCompleted: 0.92, message: "Finalizing book..."),
+                using: progressHandler
+            )
+            return PreparedBookImport(
+                id: bookID,
+                filename: filename,
+                epubFilePath: destinationURL.path,
+                extractedDirectoryPath: extractionURL.path,
+                metadata: metadata,
+                mediaOverlayJSONPath: mediaOverlay?.jsonURL.path,
+                mediaOverlayActiveClass: mediaOverlay?.manifest.activeClass,
+                mediaOverlayDuration: mediaOverlay?.manifest.duration,
+                mediaOverlayClipCount: mediaOverlay?.manifest.clipCount,
+                fingerprint: fingerprint
+            )
+        } catch {
+            if sourcePath != destinationPath {
+                try? fileManager.removeItem(at: destinationURL)
+            }
+            throw error
+        }
+    }
+
     nonisolated private static func prepareRefresh(
         from urls: [URL],
         existingBooks: [ExistingBookSnapshot],
@@ -435,6 +646,22 @@ enum BookImportService {
 
         await progressHandler(
             RefreshProgress(
+                fractionCompleted: min(max(progress.fractionCompleted, 0), 1),
+                message: progress.message
+            )
+        )
+    }
+
+    nonisolated private static func reportImportProgress(
+        _ progress: ImportProgress,
+        using progressHandler: (@MainActor @Sendable (ImportProgress) -> Void)?
+    ) async {
+        guard let progressHandler else {
+            return
+        }
+
+        await progressHandler(
+            ImportProgress(
                 fractionCompleted: min(max(progress.fractionCompleted, 0), 1),
                 message: progress.message
             )

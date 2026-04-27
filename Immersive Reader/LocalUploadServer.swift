@@ -47,7 +47,7 @@ final class LocalUploadServer {
     private var listener: NWListener?
     private var connections: [ObjectIdentifier: HTTPUploadConnection] = [:]
 
-    init(port: UInt16 = 8080) {
+    init(port: UInt16 = 80) {
         self.port = port
     }
 

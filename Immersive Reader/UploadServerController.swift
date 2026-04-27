@@ -29,6 +29,18 @@ enum LocalLibraryError: LocalizedError {
 
 @MainActor
 final class UploadServerController: ObservableObject {
+    private struct PendingImport {
+        enum Source {
+            case upload(UUID)
+            case manual
+        }
+
+        let sourceURL: URL
+        let filename: String
+        let source: Source
+        let existingBookStrategy: BookImportService.ExistingBookStrategy
+    }
+
     enum Status: Equatable {
         case stopped
         case running
@@ -99,9 +111,22 @@ final class UploadServerController: ObservableObject {
     @Published private(set) var status: Status = .stopped
     @Published private(set) var activeUploads: [ActiveUpload] = []
     @Published private(set) var recentUploads: [UploadRecord] = []
-    @Published var port: UInt16 = 8080
+    @Published var port: UInt16
+    @Published private(set) var isImportingBooks = false
+    @Published private(set) var importProgress = 0.0
+    @Published private(set) var importStatus = ""
+    @Published private(set) var currentImportFilename: String?
+    @Published private(set) var completedImportCount = 0
+    @Published private(set) var totalImportCount = 0
+    @Published var manualImportErrorMessage: String?
 
     private var server: LocalUploadServer?
+    private var pendingImports: [PendingImport] = []
+    private var importTask: Task<Void, Never>?
+
+    init(port: UInt16 = ReaderSettings.storedUploadServerPort()) {
+        self.port = port
+    }
 
     var serverURL: URL? {
         guard case .running = status, let ipAddress = Self.localIPAddress() else {
@@ -126,20 +151,16 @@ final class UploadServerController: ObservableObject {
         }
         server.onUploadFinished = { [weak self] uploadID, fileURL, filename in
             Task { @MainActor in
-                do {
-                    defer { try? FileManager.default.removeItem(at: fileURL) }
-                    self?.setPhase(.importing, forUploadID: uploadID)
-                    try BookImportService.importBooks(
-                        from: [fileURL],
-                        modelContext: modelContext,
+                self?.setPhase(.importing, forUploadID: uploadID)
+                self?.enqueueImports(
+                    [PendingImport(
+                        sourceURL: fileURL,
+                        filename: filename,
+                        source: .upload(uploadID),
                         existingBookStrategy: .overwrite
-                    )
-                    self?.removeActiveUpload(id: uploadID)
-                    self?.recentUploads.insert(UploadRecord(filename: filename, date: Date()), at: 0)
-                } catch {
-                    try? FileManager.default.removeItem(at: fileURL)
-                    self?.markUploadFailed(id: uploadID, filename: filename, message: error.localizedDescription)
-                }
+                    )],
+                    modelContext: modelContext
+                )
             }
         }
         server.onUploadFailed = { [weak self] uploadID, filename, message in
@@ -199,6 +220,118 @@ final class UploadServerController: ObservableObject {
         server = nil
         activeUploads = []
         status = .stopped
+    }
+
+    func importBooks(from urls: [URL], modelContext: ModelContext) {
+        let imports = urls.map {
+            PendingImport(
+                sourceURL: $0,
+                filename: AppStorage.sanitizedFilename($0.lastPathComponent),
+                source: .manual,
+                existingBookStrategy: .skip
+            )
+        }
+
+        manualImportErrorMessage = nil
+        enqueueImports(imports, modelContext: modelContext)
+    }
+
+    func clearManualImportError() {
+        manualImportErrorMessage = nil
+    }
+
+    var currentImportCountText: String? {
+        guard totalImportCount > 0, isImportingBooks else {
+            return nil
+        }
+        return "Book \(min(completedImportCount + 1, totalImportCount)) of \(totalImportCount)"
+    }
+
+    private func enqueueImports(_ imports: [PendingImport], modelContext: ModelContext) {
+        guard !imports.isEmpty else {
+            return
+        }
+
+        if !isImportingBooks, pendingImports.isEmpty {
+            completedImportCount = 0
+            totalImportCount = 0
+            importProgress = 0
+            importStatus = ""
+            currentImportFilename = nil
+        }
+
+        pendingImports.append(contentsOf: imports)
+        totalImportCount += imports.count
+        startImportProcessing(modelContext: modelContext)
+    }
+
+    private func startImportProcessing(modelContext: ModelContext) {
+        guard importTask == nil else {
+            return
+        }
+
+        importTask = Task { @MainActor [weak self] in
+            await self?.processPendingImports(modelContext: modelContext)
+        }
+    }
+
+    private func processPendingImports(modelContext: ModelContext) async {
+        defer {
+            importTask = nil
+            isImportingBooks = false
+            importProgress = 0
+            importStatus = ""
+            currentImportFilename = nil
+            completedImportCount = 0
+            totalImportCount = 0
+        }
+
+        while !pendingImports.isEmpty {
+            let pendingImport = pendingImports.removeFirst()
+            isImportingBooks = true
+            currentImportFilename = pendingImport.filename
+            importProgress = overallImportProgress(for: 0)
+            importStatus = "Preparing import..."
+
+            do {
+                _ = try await BookImportService.importBook(
+                    from: pendingImport.sourceURL,
+                    modelContext: modelContext,
+                    existingBookStrategy: pendingImport.existingBookStrategy
+                ) { [weak self] progress in
+                    guard let self else { return }
+                    self.importProgress = self.overallImportProgress(for: progress.fractionCompleted)
+                    self.importStatus = progress.message
+                }
+
+                if case .upload(let uploadID) = pendingImport.source {
+                    removeActiveUpload(id: uploadID)
+                    recentUploads.insert(UploadRecord(filename: pendingImport.filename, date: Date()), at: 0)
+                }
+            } catch {
+                if case .upload(let uploadID) = pendingImport.source {
+                    markUploadFailed(id: uploadID, filename: pendingImport.filename, message: error.localizedDescription)
+                } else if manualImportErrorMessage == nil {
+                    manualImportErrorMessage = error.localizedDescription
+                }
+            }
+
+            if case .upload = pendingImport.source {
+                try? FileManager.default.removeItem(at: pendingImport.sourceURL)
+            }
+
+            completedImportCount += 1
+            importProgress = overallImportProgress(for: 0)
+        }
+    }
+
+    private func overallImportProgress(for currentBookProgress: Double) -> Double {
+        guard totalImportCount > 0 else {
+            return currentBookProgress
+        }
+
+        let completed = Double(completedImportCount)
+        return min(max((completed + currentBookProgress) / Double(totalImportCount), 0), 1)
     }
 
     private func upsertActiveUpload(from snapshot: LocalUploadServer.UploadTransferSnapshot, phase: ActiveUpload.Phase) {
