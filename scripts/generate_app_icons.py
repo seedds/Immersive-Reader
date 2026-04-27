@@ -55,7 +55,8 @@ CONTENTS_JSON = {
     "info": {"author": "xcode", "version": 1},
 }
 
-DEFAULT_OUTPUT = Path("Immersive Reader/Assets.xcassets/AppIcon.appiconset")
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_OUTPUT = REPO_ROOT / "Immersive Reader/Assets.xcassets/AppIcon.appiconset"
 
 try:
     RESAMPLE = Image.Resampling.LANCZOS

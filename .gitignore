@@ -13,3 +13,4 @@ xcuserdata/
 Pods/
 .swiftpm/
 .build/
+__pycache__/
