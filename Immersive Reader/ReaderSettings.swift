@@ -16,15 +16,18 @@ nonisolated enum ReaderSettings {
     static let themeKey = "readerTheme"
     static let readAloudColorKey = "readerReadAloudColor"
     static let playbackSpeedKey = "readerPlaybackSpeed"
+    static let playbackJumpIntervalKey = "readerPlaybackJumpInterval"
     static let uploadServerPortKey = "uploadServerPort"
     static let defaultFontSize = 1.2
     static let defaultReadAloudColorHex = "#34C759"
     static let defaultPlaybackSpeed = 1.0
+    static let defaultPlaybackJumpInterval = 15.0
     static let defaultUploadServerPort = 80
     static let fontSizeRange = 0.8 ... 2.0
     static let playbackSpeedRange = 0.5 ... 2.0
     static let fontSizeStep = 0.1
     static let playbackSpeedStep = 0.1
+    static let playbackJumpIntervalOptions = [15.0, 30.0, 45.0, 60.0]
 
     static let fontFamilyOptions: [FontFamilyOption] = [
         FontFamilyOption(name: "Default", value: nil),
@@ -58,6 +61,10 @@ nonisolated enum ReaderSettings {
         min(max(value, playbackSpeedRange.lowerBound), playbackSpeedRange.upperBound)
     }
 
+    static func normalizedPlaybackJumpInterval(_ value: Double) -> Double {
+        playbackJumpIntervalOptions.min(by: { abs($0 - value) < abs($1 - value) }) ?? defaultPlaybackJumpInterval
+    }
+
     static func normalizedUploadServerPort(_ value: Int) -> Int {
         min(max(value, 1), Int(UInt16.max))
     }
@@ -81,6 +88,37 @@ nonisolated enum ReaderSettings {
             ? roundedValue.formatted(.number.precision(.fractionLength(0)))
             : normalized.formatted(.number.precision(.fractionLength(1)))
         return "\(numberText)x"
+    }
+
+    static func playbackJumpIntervalText(_ value: Double) -> String {
+        let normalized = normalizedPlaybackJumpInterval(value)
+        let wholeSeconds = Int(normalized.rounded())
+        return "\(wholeSeconds)s"
+    }
+
+    static func playbackJumpLabel(_ value: Double, direction: PlaybackJumpDirection) -> String {
+        let prefix = direction == .backward ? "-" : "+"
+        return "\(prefix)\(playbackJumpIntervalText(value))"
+    }
+
+    static func playbackJumpSymbolName(_ value: Double, direction: PlaybackJumpDirection) -> String {
+        let wholeSeconds = Int(normalizedPlaybackJumpInterval(value).rounded())
+        switch direction {
+        case .backward:
+            return "gobackward.\(wholeSeconds)"
+        case .forward:
+            return "goforward.\(wholeSeconds)"
+        }
+    }
+
+    static func playbackJumpAccessibilityLabel(_ value: Double, direction: PlaybackJumpDirection) -> String {
+        let wholeSeconds = Int(normalizedPlaybackJumpInterval(value).rounded())
+        switch direction {
+        case .backward:
+            return "Back \(wholeSeconds) seconds"
+        case .forward:
+            return "Forward \(wholeSeconds) seconds"
+        }
     }
 
     static func fontSizeText(_ value: Double) -> String {
@@ -303,4 +341,9 @@ struct FontFamilyOption: Identifiable, Hashable {
     var id: String {
         value?.rawValue ?? ""
     }
+}
+
+nonisolated enum PlaybackJumpDirection {
+    case backward
+    case forward
 }

@@ -599,14 +599,24 @@ private struct SettingsView: View {
     @SwiftUI.AppStorage(ReaderSettings.themeKey) private var themeRawValue = AppThemeOption.system.rawValue
     @SwiftUI.AppStorage(ReaderSettings.readAloudColorKey) private var readAloudColorRawValue = ReaderSettings.defaultReadAloudColorHex
     @SwiftUI.AppStorage(ReaderSettings.playbackSpeedKey) private var playbackSpeed = ReaderSettings.defaultPlaybackSpeed
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @Namespace private var themeNamespace
+    @SwiftUI.AppStorage(ReaderSettings.playbackJumpIntervalKey) private var playbackJumpInterval = ReaderSettings.defaultPlaybackJumpInterval
+
+    private var playbackJumpIntervalSliderValue: Binding<Double> {
+        Binding(
+            get: {
+                Double(playbackJumpIntervalIndex(for: ReaderSettings.normalizedPlaybackJumpInterval(playbackJumpInterval)))
+            },
+            set: { newValue in
+                playbackJumpInterval = playbackJumpIntervalValue(for: Int(newValue.rounded()))
+            }
+        )
+    }
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("Reader") {
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: 0) {
                         HStack {
                             Text("Font Size")
                             Spacer()
@@ -624,7 +634,7 @@ private struct SettingsView: View {
                         )
                     }
 
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: 0) {
                         HStack {
                             Text("Playback Speed")
                             Spacer()
@@ -639,6 +649,21 @@ private struct SettingsView: View {
                             ),
                             in: ReaderSettings.playbackSpeedRange,
                             step: ReaderSettings.playbackSpeedStep
+                        )
+                    }
+
+                    VStack(alignment: .leading, spacing: 0) {
+                        HStack {
+                            Text("Skip Interval")
+                            Spacer()
+                            Text(ReaderSettings.playbackJumpIntervalText(playbackJumpInterval))
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Slider(
+                            value: playbackJumpIntervalSliderValue,
+                            in: 0 ... Double(ReaderSettings.playbackJumpIntervalOptions.count - 1),
+                            step: 1
                         )
                     }
 
@@ -657,8 +682,8 @@ private struct SettingsView: View {
                     }
                     .pickerStyle(.segmented)
 
-                     NavigationLink {
-                         ReadAloudColorEditor(colorHex: $readAloudColorRawValue)
+                    NavigationLink {
+                        ReadAloudColorEditor(colorHex: $readAloudColorRawValue)
                             .padding(.horizontal, 16)
                             .padding(.top, 12)
                             .padding(.bottom, 16)
@@ -686,22 +711,14 @@ private struct SettingsView: View {
             }
         }
     }
-}
 
-private extension View {
-    @ViewBuilder
-    func liquidGlassCapsule() -> some View {
-        if #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) {
-            self
-                .glassEffect(.regular, in: .capsule)
-        } else {
-            self
-                .background(.thinMaterial, in: Capsule())
-                .overlay {
-                    Capsule()
-                        .stroke(.white.opacity(0.25), lineWidth: 1)
-                }
-        }
+    private func playbackJumpIntervalIndex(for value: Double) -> Int {
+        ReaderSettings.playbackJumpIntervalOptions.firstIndex(of: value) ?? 0
+    }
+
+    private func playbackJumpIntervalValue(for index: Int) -> Double {
+        let clampedIndex = min(max(index, 0), ReaderSettings.playbackJumpIntervalOptions.count - 1)
+        return ReaderSettings.playbackJumpIntervalOptions[clampedIndex]
     }
 }
 

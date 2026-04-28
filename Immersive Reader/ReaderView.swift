@@ -20,6 +20,7 @@ struct ReaderView: View {
     @SwiftUI.AppStorage(ReaderSettings.themeKey) private var readerThemeRawValue = AppThemeOption.system.rawValue
     @SwiftUI.AppStorage(ReaderSettings.readAloudColorKey) private var readerReadAloudColorRawValue = ReaderSettings.defaultReadAloudColorHex
     @SwiftUI.AppStorage(ReaderSettings.playbackSpeedKey) private var readerPlaybackSpeed = ReaderSettings.defaultPlaybackSpeed
+    @SwiftUI.AppStorage(ReaderSettings.playbackJumpIntervalKey) private var readerPlaybackJumpInterval = ReaderSettings.defaultPlaybackJumpInterval
     @StateObject private var playback = MediaOverlayPlaybackController()
 
     let book: Book
@@ -28,10 +29,6 @@ struct ReaderView: View {
     @State private var chapterItems: [ChapterListItem] = []
     @State private var isChapterDrawerPresented = false
     @State private var currentLocationReference: EPUBReference?
-    @State private var suppressNextClipNavigation = false
-    @State private var suppressNextTapPlaybackNavigation = false
-    @State private var programmaticPlaybackScrollState: ProgrammaticPlaybackScrollState?
-    @State private var suppressPlaybackRetargetUntilClipChange = false
     @State private var readingOrderResourceHrefs: [String] = []
     @State private var isPlaybackSpeedControlPresented = false
     @State private var isReaderSettingsControlPresented = false
@@ -51,11 +48,6 @@ struct ReaderView: View {
                                 navigator: navigator,
                                 onLocationDidChange: { locator in
                                     handleLocationDidChange(locator, navigator: navigator)
-                                },
-                                onViewportDidChange: {
-                                    Task {
-                                        await handleViewportDidChange(navigator: navigator)
-                                    }
                                 },
                                 onAudioTap: { reference in
                                     Task {
@@ -78,6 +70,7 @@ struct ReaderView: View {
                             MediaOverlayPlaybackBar(
                                 playback: playback,
                                 playbackSpeed: $readerPlaybackSpeed,
+                                playbackJumpInterval: readerPlaybackJumpInterval,
                                 fontSize: $readerFontSize,
                                 isSpeedControlPresented: $isPlaybackSpeedControlPresented,
                                 isReaderSettingsControlPresented: $isReaderSettingsControlPresented,
@@ -94,14 +87,20 @@ struct ReaderView: View {
                                     }
                                 },
                                 previous: {
-                                    suppressPlaybackRetargetUntilClipChange = false
-                                    playback.previousClip(reason: "playbackBar.previousButton")
-                                    handleCurrentClipChange(oldIndex: nil, newIndex: playback.currentClipIndex, navigator: navigator)
+                                    Task {
+                                        await playback.jump(
+                                            by: -ReaderSettings.normalizedPlaybackJumpInterval(readerPlaybackJumpInterval),
+                                            reason: "playbackBar.previousButton"
+                                        )
+                                    }
                                 },
                                 next: {
-                                    suppressPlaybackRetargetUntilClipChange = false
-                                    playback.nextClip(reason: "playbackBar.nextButton")
-                                    handleCurrentClipChange(oldIndex: nil, newIndex: playback.currentClipIndex, navigator: navigator)
+                                    Task {
+                                        await playback.jump(
+                                            by: ReaderSettings.normalizedPlaybackJumpInterval(readerPlaybackJumpInterval),
+                                            reason: "playbackBar.nextButton"
+                                        )
+                                    }
                                 }
                             )
                         }
@@ -137,6 +136,15 @@ struct ReaderView: View {
                 .onChange(of: playback.currentClipIndex) { oldIndex, newIndex in
                     handleCurrentClipChange(oldIndex: oldIndex, newIndex: newIndex, navigator: navigator)
                 }
+                .onChange(of: playback.state) { oldValue, newValue in
+                    guard !oldValue.isPlaying, newValue.isPlaying else {
+                        return
+                    }
+
+                    Task {
+                        await ensureCurrentPlayingSegmentPosition(with: navigator)
+                    }
+                }
                 .onChange(of: readerFontSize) { _, _ in
                     applyReaderPreferences(to: navigator)
                 }
@@ -151,6 +159,9 @@ struct ReaderView: View {
                 }
                 .onChange(of: readerPlaybackSpeed) { _, newValue in
                     playback.setPlaybackRate(newValue)
+                }
+                .onChange(of: readerPlaybackJumpInterval) { _, newValue in
+                    playback.setJumpInterval(newValue)
                 }
                 .onChange(of: colorScheme) { _, _ in
                     if ReaderSettings.appTheme(from: readerThemeRawValue) == .system {
@@ -204,6 +215,7 @@ struct ReaderView: View {
         book.lastOpenedAt = Date()
         try? modelContext.save()
         playback.setPlaybackRate(readerPlaybackSpeed)
+        playback.setJumpInterval(readerPlaybackJumpInterval)
         playback.load(from: book.mediaOverlayJSONPath)
 
         do {
@@ -224,7 +236,7 @@ struct ReaderView: View {
             self.chapterItems = chapterItems
             self.readingOrderResourceHrefs = publication.readingOrder.map { normalizedResourceHref(for: $0.href) }
             state = .ready(publication: publication, navigator: navigator)
-            restoreLastPlayedClipSelectionIfAvailable(with: navigator)
+            await restoreLastPlayedClipSelectionIfAvailable(with: navigator)
         } catch {
             state = .failed(error.localizedDescription)
         }
@@ -314,15 +326,14 @@ struct ReaderView: View {
     }
 
     @MainActor
-    private func restoreLastPlayedClipSelectionIfAvailable(with navigator: EPUBNavigatorViewController) {
+    private func restoreLastPlayedClipSelectionIfAvailable(with navigator: EPUBNavigatorViewController) async {
         guard let restoredIndex = restoredLastPlayedClipIndex() else {
             navigator.apply(decorations: [], in: mediaOverlayDecorationGroup)
             return
         }
 
-        suppressNextClipNavigation = true
         playback.selectClip(at: restoredIndex, autoplay: false, reason: "restoreLastPlayedClip")
-        navigateToCurrentClip(with: navigator)
+        await navigateToCurrentClip(with: navigator)
         applyCurrentClipDecoration(with: navigator)
     }
 
@@ -353,57 +364,21 @@ struct ReaderView: View {
     private func handleLocationDidChange(_ locator: Locator, navigator: EPUBNavigatorViewController) {
         currentLocationReference = normalizedReference(for: locator.href.string)
         saveLocation(locator)
-
-        maybeEndProgrammaticPlaybackScroll(with: currentLocationReference)
     }
 
     @MainActor
-    private func handleViewportDidChange(navigator: EPUBNavigatorViewController) async {
-        if case .autoFollowInDocument = programmaticPlaybackScrollState?.kind,
-           let visibleLocator = await navigator.firstVisibleElementLocator() {
-            maybeEndProgrammaticPlaybackScroll(
-                with: EPUBReference(
-                    resourceHref: normalizedResourceHref(for: visibleLocator.href.string),
-                    fragmentID: visibleLocator.locations.fragments.first
-                )
-            )
-        }
-    }
-
-    private var isProgrammaticPlaybackScrollInFlight: Bool {
-        programmaticPlaybackScrollState != nil
-    }
-
-    @MainActor
-    private func navigateToCurrentClip(with navigator: EPUBNavigatorViewController) {
+    private func navigateToCurrentClip(with navigator: EPUBNavigatorViewController) async {
         guard let clip = playback.currentClip,
-              let href = RelativeURL(epubHREF: clip.textResourceHref)
+              let locator = playbackLocator(for: clip)
         else {
             return
         }
 
-        let locator = Locator(
-            href: href,
-            mediaType: .xhtml,
-            locations: Locator.Locations(
-                fragments: clip.fragmentID.map { [$0] } ?? []
-            )
-        )
-
-        beginProgrammaticPlaybackScroll(
-            kind: .goToClip,
-            target: normalizedReference(for: clip.textResourceHref)
-        )
-
-        Task {
-            await navigator.go(to: locator, options: .animated)
-        }
+        _ = await navigator.go(to: locator, options: .animated)
     }
 
     @MainActor
     private func selectChapter(_ item: ChapterListItem, navigator: EPUBNavigatorViewController) async {
-        suppressPlaybackRetargetUntilClipChange = false
-
         withAnimation(.easeInOut(duration: 0.2)) {
             isChapterDrawerPresented = false
         }
@@ -411,7 +386,9 @@ struct ReaderView: View {
         let wasPlaying = playback.state.isPlaying
         if let clipIndex = firstClipIndex(for: item.link) {
             playback.selectClip(at: clipIndex, autoplay: wasPlaying, reason: "chapterSelect")
-            navigateToCurrentClip(with: navigator)
+            if !wasPlaying {
+                await navigateToCurrentClip(with: navigator)
+            }
             applyCurrentClipDecoration(with: navigator)
             return
         }
@@ -431,158 +408,36 @@ struct ReaderView: View {
 
     @MainActor
     private func startPlaybackFromVisibleOrForwardPosition(with navigator: EPUBNavigatorViewController) async {
-        suppressPlaybackRetargetUntilClipChange = false
+        if let targetClipIndex = await resolvedPlaybackStartClipIndex(with: navigator),
+           playback.currentClipIndex != targetClipIndex {
+            playback.selectClip(at: targetClipIndex, autoplay: true, reason: "startPlaybackFromVisibleOrForwardPosition")
+        } else if playback.currentClipIndex != nil {
+            playback.play(reason: "startPlaybackFromVisibleOrForwardPosition.resumeCurrentClip")
+        }
 
-        let currentClipVisibility = await currentClipPlaybackVisibility(with: navigator)
-        if currentClipVisibility != .notVisible {
-            let shouldAlignToTop = currentClipVisibility == .visibleNeedsTopAlignment
-            playback.play(reason: "startPlaybackFromVisibleOrForwardPosition.resumeVisibleCurrentClip")
-            if shouldAlignToTop {
-                await alignCurrentClipTopForPlayback(with: navigator)
-            }
-            applyCurrentClipDecoration(with: navigator)
+        applyCurrentClipDecoration(with: navigator)
+    }
+
+    @MainActor
+    private func ensureCurrentPlayingSegmentPosition(with navigator: EPUBNavigatorViewController) async {
+        guard playback.state.isPlaying,
+              let currentClip = playback.currentClip
+        else {
             return
         }
 
-        guard let target = await resolvedPlaybackStartTarget(with: navigator) else {
-            return
-        }
-
-        if playback.currentClipIndex != target.clipIndex {
-            if !target.shouldNavigate {
-                suppressNextClipNavigation = true
-            }
-            playback.selectClip(at: target.clipIndex, autoplay: true, reason: "startPlaybackFromVisibleOrForwardPosition")
-            if target.shouldNavigate {
-                navigateToCurrentClip(with: navigator)
-            } else if target.shouldAlignToTop {
-                await alignCurrentClipTopForPlayback(with: navigator)
+        if currentClip.fragmentID?.isEmpty != false {
+            if !(await isCurrentClipResourceVisible(with: navigator, clip: currentClip)) {
+                await navigateToCurrentClip(with: navigator)
             }
             return
         }
 
-        playback.play(reason: "startPlaybackFromVisibleOrForwardPosition.resumeCurrentClip")
-        if target.shouldNavigate {
-            navigateToCurrentClip(with: navigator)
-        } else if target.shouldAlignToTop {
-            await alignCurrentClipTopForPlayback(with: navigator)
-            applyCurrentClipDecoration(with: navigator)
-        } else {
-            applyCurrentClipDecoration(with: navigator)
-        }
-    }
-
-    @MainActor
-    private func currentClipPlaybackVisibility(with navigator: EPUBNavigatorViewController) async -> FragmentPlaybackVisibility {
-        guard let currentClip = playback.currentClip,
-              let fragmentID = currentClip.fragmentID,
-              !fragmentID.isEmpty,
-              let visibleLocator = await navigator.firstVisibleElementLocator()
-        else {
-            return .notVisible
+        if !(await isCurrentClipResourceVisible(with: navigator, clip: currentClip)) {
+            await navigateToCurrentClip(with: navigator)
         }
 
-        guard normalizedResourceHref(for: currentClip.textResourceHref) == normalizedResourceHref(for: visibleLocator.href.string) else {
-            return .notVisible
-        }
-
-        return await fragmentPlaybackVisibility(for: fragmentID, navigator: navigator)
-    }
-
-    @MainActor
-    private func fragmentPlaybackVisibility(for fragmentID: String, navigator: EPUBNavigatorViewController) async -> FragmentPlaybackVisibility {
-        let fragmentIDLiteral = javaScriptStringLiteral(fragmentID)
-        let script = """
-        (() => {
-          const element = document.getElementById(\(fragmentIDLiteral));
-          if (!element) {
-            return 'notVisible';
-          }
-
-          const style = window.getComputedStyle(element);
-          if (style.display === 'none' || style.visibility === 'hidden') {
-            return 'notVisible';
-          }
-
-          const rect = element.getBoundingClientRect();
-          if (!(rect.bottom > 0 && rect.top < window.innerHeight)) {
-            return 'notVisible';
-          }
-
-          const topThreshold = window.innerHeight * 0.05;
-          return rect.top < topThreshold ? 'visibleNeedsTopAlignment' : 'visible';
-        })();
-        """
-
-        let result = await navigator.evaluateJavaScript(script)
-        guard case .success(let value) = result,
-              let visibility = value as? String
-        else {
-            return .notVisible
-        }
-
-        switch visibility {
-        case "visible":
-            return .visible
-        case "visibleNeedsTopAlignment":
-            return .visibleNeedsTopAlignment
-        default:
-            return .notVisible
-        }
-    }
-
-    @MainActor
-    private func alignCurrentClipTopForPlayback(with navigator: EPUBNavigatorViewController) async {
-        guard let currentClip = playback.currentClip,
-              let fragmentID = currentClip.fragmentID,
-              !fragmentID.isEmpty
-        else {
-            return
-        }
-
-        _ = await alignFragmentTopForPlayback(fragmentID: fragmentID, navigator: navigator)
-    }
-
-    @MainActor
-    private func alignFragmentTopForPlayback(fragmentID: String, navigator: EPUBNavigatorViewController) async -> String {
-
-        let fragmentIDLiteral = javaScriptStringLiteral(fragmentID)
-        let script = """
-        (() => {
-          const element = document.getElementById(\(fragmentIDLiteral));
-          if (!element) {
-            return 'missing';
-          }
-
-          const style = window.getComputedStyle(element);
-          if (style.display === 'none' || style.visibility === 'hidden') {
-            return 'missing';
-          }
-
-          const rect = element.getBoundingClientRect();
-          if (!(rect.bottom > 0 && rect.top < window.innerHeight)) {
-            return 'notVisible';
-          }
-
-          const targetTop = window.innerHeight * 0.05;
-          const delta = rect.top - targetTop;
-          if (Math.abs(delta) <= 2) {
-            return 'noop';
-          }
-
-          window.scrollBy({ top: delta, behavior: 'smooth' });
-          return 'scrolled';
-        })();
-        """
-
-        let result = await navigator.evaluateJavaScript(script)
-        guard case .success(let value) = result,
-              let action = value as? String
-        else {
-            return "failed"
-        }
-
-        return action
+        _ = await repositionCurrentClipForPlaybackIfNeeded(with: navigator)
     }
 
     @MainActor
@@ -591,8 +446,6 @@ struct ReaderView: View {
             return
         }
 
-        suppressPlaybackRetargetUntilClipChange = false
-        suppressNextTapPlaybackNavigation = true
         playback.selectClip(at: clipIndex, autoplay: true, reason: "audioTap")
         applyCurrentClipDecoration(with: navigator)
     }
@@ -694,144 +547,131 @@ struct ReaderView: View {
         applyCurrentClipDecoration(with: navigator)
         persistLastPlayedClip()
 
-        if oldIndex != newIndex {
-            suppressPlaybackRetargetUntilClipChange = false
-        }
-
-        if suppressNextTapPlaybackNavigation {
-            suppressNextTapPlaybackNavigation = false
-            return
-        }
-
-        if suppressNextClipNavigation {
-            suppressNextClipNavigation = false
-            return
-        }
-
         guard let newIndex,
               playback.clips.indices.contains(newIndex)
         else {
             return
         }
 
-        let newClip = playback.clips[newIndex]
-
         if playback.state.isPlaying,
-           let oldIndex,
-           playback.clips.indices.contains(oldIndex) {
-            let oldClip = playback.clips[oldIndex]
-            if oldClip.textResourceHref == newClip.textResourceHref {
-                autoFollowCurrentClipIfNeeded(with: navigator, fragmentID: newClip.fragmentID)
-                return
+           oldIndex != newIndex {
+            Task {
+                await ensureCurrentPlayingSegmentPosition(with: navigator)
             }
         }
+    }
 
-        navigateToCurrentClip(with: navigator)
+    private func playbackLocator(for clip: EPUBMediaOverlayClip) -> Locator? {
+        guard let href = RelativeURL(epubHREF: clip.textResourceHref) else {
+            return nil
+        }
+
+        return Locator(
+            href: href,
+            mediaType: .xhtml,
+            locations: Locator.Locations(
+                fragments: clip.fragmentID.map { [$0] } ?? []
+            )
+        )
     }
 
     @MainActor
-    private func autoFollowCurrentClipIfNeeded(with navigator: EPUBNavigatorViewController, fragmentID: String?) {
-        guard playback.state.isPlaying,
-              let fragmentID,
-              !fragmentID.isEmpty,
-              let currentClip = playback.currentClip
+    private func isCurrentClipResourceVisible(with navigator: EPUBNavigatorViewController, clip: EPUBMediaOverlayClip) async -> Bool {
+        guard let visibleLocator = await navigator.firstVisibleElementLocator() else {
+            return false
+        }
+
+        return normalizedResourceHref(for: visibleLocator.href.string) == normalizedResourceHref(for: clip.textResourceHref)
+    }
+
+    @MainActor
+    private func repositionCurrentClipForPlaybackIfNeeded(with navigator: EPUBNavigatorViewController) async -> String {
+        guard let currentClip = playback.currentClip,
+              let fragmentID = currentClip.fragmentID,
+              !fragmentID.isEmpty
         else {
-            return
+            return "missing"
         }
 
         let fragmentIDLiteral = javaScriptStringLiteral(fragmentID)
+        let endBoundaryFragmentIDLiteral = nextPlaybackBoundaryFragmentID(after: currentClip)
+            .map(javaScriptStringLiteral)
+            ?? "null"
         let script = """
         (() => {
-          const element = document.getElementById(\(fragmentIDLiteral));
-          if (!element) {
+          const startElement = document.getElementById(\(fragmentIDLiteral));
+          if (!startElement) {
             return 'missing';
           }
 
-          const rect = element.getBoundingClientRect();
-          const topThreshold = window.innerHeight * 0.05;
-          const bottomThreshold = window.innerHeight * 0.9;
-          let targetTop = null;
-
-          if (rect.top <= topThreshold) {
-            targetTop = topThreshold;
-          } else if (rect.bottom >= bottomThreshold) {
-            targetTop = window.innerHeight * 0.15;
+          const startStyle = window.getComputedStyle(startElement);
+          if (startStyle.display === 'none' || startStyle.visibility === 'hidden') {
+            return 'missing';
           }
 
-          if (targetTop !== null) {
-            const delta = rect.top - targetTop;
-            if (Math.abs(delta) <= 2) {
-              return 'noop';
+          const viewportHeight = window.innerHeight;
+          const startRect = startElement.getBoundingClientRect();
+          const endBoundaryFragmentID = \(endBoundaryFragmentIDLiteral);
+          let endBoundaryPosition = document.documentElement.getBoundingClientRect().bottom;
+
+          if (endBoundaryFragmentID !== null) {
+            const endBoundaryElement = document.getElementById(endBoundaryFragmentID);
+            if (endBoundaryElement) {
+              const endStyle = window.getComputedStyle(endBoundaryElement);
+              if (endStyle.display !== 'none' && endStyle.visibility !== 'hidden') {
+                endBoundaryPosition = endBoundaryElement.getBoundingClientRect().top;
+              }
             }
-
-            window.scrollBy({ top: delta, behavior: 'smooth' });
-            return 'scrolled';
           }
 
-          return 'noop';
+          const startOutOfScreen = startRect.top < 0 || startRect.top > viewportHeight;
+          const endOutOfScreen = endBoundaryPosition < 0 || endBoundaryPosition > viewportHeight;
+          if (!startOutOfScreen && !endOutOfScreen) {
+            return 'noop';
+          }
+
+          const targetTop = viewportHeight * 0.05;
+          const delta = startRect.top - targetTop;
+          if (Math.abs(delta) <= 2) {
+            return 'noop';
+          }
+
+          window.scrollBy({ top: delta, behavior: 'smooth' });
+          return 'scrolled';
         })();
         """
 
-        beginProgrammaticPlaybackScroll(
-            kind: .autoFollowInDocument,
-            target: EPUBReference(
-                resourceHref: normalizedResourceHref(for: currentClip.textResourceHref),
-                fragmentID: fragmentID
-            )
-        )
-
-        Task {
-            let result = await navigator.evaluateJavaScript(script)
-            guard case .success(let value) = result,
-                  let action = value as? String
-            else {
-                await MainActor.run {
-                    endProgrammaticPlaybackScroll()
-                }
-                return
-            }
-
-            await MainActor.run {
-                if action == "scrolled" {
-                    suppressPlaybackRetargetUntilClipChange = true
-                } else {
-                    endProgrammaticPlaybackScroll()
-                }
-            }
-        }
-    }
-
-    @MainActor
-    private func beginProgrammaticPlaybackScroll(kind: ProgrammaticPlaybackScrollKind, target: EPUBReference) {
-        programmaticPlaybackScrollState = ProgrammaticPlaybackScrollState(kind: kind, target: target)
-    }
-
-    @MainActor
-    private func maybeEndProgrammaticPlaybackScroll(with reference: EPUBReference?) {
-        guard let state = programmaticPlaybackScrollState,
-              let reference
+        let result = await navigator.evaluateJavaScript(script)
+        guard case .success(let value) = result,
+              let action = value as? String
         else {
-            return
+            return "failed"
         }
 
-        switch state.kind {
-        case .goToClip:
-            if state.target.resourceHref == reference.resourceHref {
-                if state.target.fragmentID == nil || state.target.fragmentID == reference.fragmentID {
-                    endProgrammaticPlaybackScroll()
-                }
-            }
-
-        case .autoFollowInDocument:
-            if reference == state.target {
-                endProgrammaticPlaybackScroll()
-            }
-        }
+        return action
     }
 
-    @MainActor
-    private func endProgrammaticPlaybackScroll() {
-        programmaticPlaybackScrollState = nil
+    private func nextPlaybackBoundaryFragmentID(after clip: EPUBMediaOverlayClip) -> String? {
+        guard let currentClipIndex = playback.currentClipIndex,
+              playback.clips.indices.contains(currentClipIndex)
+        else {
+            return nil
+        }
+
+        let currentResourceHref = normalizedResourceHref(for: clip.textResourceHref)
+        for index in playback.clips.indices where index > currentClipIndex {
+            let nextClip = playback.clips[index]
+            guard normalizedResourceHref(for: nextClip.textResourceHref) == currentResourceHref else {
+                return nil
+            }
+
+            if let fragmentID = nextClip.fragmentID,
+               !fragmentID.isEmpty {
+                return fragmentID
+            }
+        }
+
+        return nil
     }
 
     private func playableFragmentIDs(for resourceHref: String) -> [String] {
@@ -854,7 +694,7 @@ struct ReaderView: View {
     }
 
     @MainActor
-    private func resolvedPlaybackStartTarget(with navigator: EPUBNavigatorViewController) async -> PlaybackStartTarget? {
+    private func resolvedPlaybackStartClipIndex(with navigator: EPUBNavigatorViewController) async -> Int? {
         guard let visibleLocator = await navigator.firstVisibleElementLocator() else {
             return nil
         }
@@ -863,15 +703,15 @@ struct ReaderView: View {
         let playableIDs = playableFragmentIDs(for: visibleResourceHref)
 
         if !playableIDs.isEmpty,
-           let visibleTarget = await firstPlayableFragmentIDInViewport(
+           let visibleFragmentID = await firstPlayableFragmentIDInViewport(
             fragmentIDs: playableIDs,
             navigator: navigator
            ),
             let visibleClipIndex = exactClipIndex(for: EPUBReference(
             resourceHref: visibleResourceHref,
-            fragmentID: visibleTarget.fragmentID
+            fragmentID: visibleFragmentID
              )) {
-            return PlaybackStartTarget(clipIndex: visibleClipIndex, shouldNavigate: false, shouldAlignToTop: visibleTarget.shouldAlignToTop)
+            return visibleClipIndex
         }
 
         if !playableIDs.isEmpty,
@@ -882,8 +722,8 @@ struct ReaderView: View {
            let beforeClipIndex = exactClipIndex(for: EPUBReference(
             resourceHref: visibleResourceHref,
             fragmentID: beforeFragmentID
-            )) {
-            return PlaybackStartTarget(clipIndex: beforeClipIndex, shouldNavigate: true, shouldAlignToTop: false)
+             )) {
+            return beforeClipIndex
         }
 
         if !playableIDs.isEmpty,
@@ -894,12 +734,12 @@ struct ReaderView: View {
            let forwardClipIndex = exactClipIndex(for: EPUBReference(
             resourceHref: visibleResourceHref,
             fragmentID: forwardFragmentID
-            )) {
-            return PlaybackStartTarget(clipIndex: forwardClipIndex, shouldNavigate: true, shouldAlignToTop: false)
+             )) {
+            return forwardClipIndex
         }
 
         if let laterClipIndex = firstClipIndex(afterResourceHref: visibleResourceHref) {
-            return PlaybackStartTarget(clipIndex: laterClipIndex, shouldNavigate: true, shouldAlignToTop: false)
+            return laterClipIndex
         }
 
         return nil
@@ -909,12 +749,11 @@ struct ReaderView: View {
     private func firstPlayableFragmentIDInViewport(
         fragmentIDs: [String],
         navigator: EPUBNavigatorViewController
-    ) async -> VisibleFragmentTarget? {
+    ) async -> String? {
         let fragmentIDsLiteral = javaScriptArrayLiteral(fragmentIDs)
         let script = """
         (() => {
           const fragmentIDs = \(fragmentIDsLiteral);
-          const topThreshold = window.innerHeight * 0.05;
 
           const topIntersectingViewport = element => {
             if (!element) {
@@ -931,13 +770,10 @@ struct ReaderView: View {
               return null;
             }
 
-            return {
-              top: rect.top,
-              needsTopAlignment: rect.top < topThreshold
-            };
+            return rect.top;
           };
 
-          let firstVisible = null;
+          var firstVisible = null;
           for (const fragmentID of fragmentIDs) {
             const element = document.getElementById(fragmentID);
             const visiblePosition = topIntersectingViewport(element);
@@ -945,31 +781,27 @@ struct ReaderView: View {
               continue;
             }
 
-            if (!firstVisible || visiblePosition.top < firstVisible.top) {
+            if (!firstVisible || visiblePosition < firstVisible.top) {
               firstVisible = {
-                top: visiblePosition.top,
-                fragmentID,
-                needsTopAlignment: visiblePosition.needsTopAlignment
+                top: visiblePosition,
+                fragmentID
               };
             }
           }
 
-          return firstVisible ? [firstVisible.fragmentID, firstVisible.needsTopAlignment] : null;
+          return firstVisible?.fragmentID ?? null;
         })();
         """
 
         let result = await navigator.evaluateJavaScript(script)
         guard case .success(let value) = result,
-              let payload = value as? [Any],
-              payload.count == 2,
-              let fragmentID = payload[0] as? String,
+              let fragmentID = value as? String,
               !fragmentID.isEmpty
         else {
             return nil
         }
 
-        let shouldAlignToTop = payload[1] as? Bool ?? false
-        return VisibleFragmentTarget(fragmentID: fragmentID, shouldAlignToTop: shouldAlignToTop)
+        return fragmentID
     }
 
     @MainActor
@@ -982,7 +814,7 @@ struct ReaderView: View {
         (() => {
           const fragmentIDs = \(fragmentIDsLiteral);
 
-          let nearestBefore = null;
+          var nearestBefore = null;
           for (const fragmentID of fragmentIDs) {
             const element = document.getElementById(fragmentID);
             if (!element) {
@@ -1029,7 +861,7 @@ struct ReaderView: View {
         (() => {
           const fragmentIDs = \(fragmentIDsLiteral);
 
-          let firstForward = null;
+          var firstForward = null;
           for (const fragmentID of fragmentIDs) {
             const element = document.getElementById(fragmentID);
             if (!element) {
@@ -1138,44 +970,6 @@ private struct EPUBReference: Equatable {
     let fragmentID: String?
 }
 
-private enum ProgrammaticPlaybackScrollKind {
-    case autoFollowInDocument
-    case goToClip
-}
-
-private struct ProgrammaticPlaybackScrollState {
-    let kind: ProgrammaticPlaybackScrollKind
-    let target: EPUBReference
-}
-
-private enum FragmentPlaybackVisibility: CustomStringConvertible, Equatable {
-    case notVisible
-    case visible
-    case visibleNeedsTopAlignment
-
-    var description: String {
-        switch self {
-        case .notVisible:
-            return "notVisible"
-        case .visible:
-            return "visible"
-        case .visibleNeedsTopAlignment:
-            return "visibleNeedsTopAlignment"
-        }
-    }
-}
-
-private struct VisibleFragmentTarget {
-    let fragmentID: String
-    let shouldAlignToTop: Bool
-}
-
-private struct PlaybackStartTarget {
-    let clipIndex: Int
-    let shouldNavigate: Bool
-    let shouldAlignToTop: Bool
-}
-
 private struct ChapterDrawer: View {
     let items: [ChapterListItem]
     let selectedItemID: ChapterListItem.ID?
@@ -1246,6 +1040,7 @@ private struct ChapterDrawer: View {
 private struct MediaOverlayPlaybackBar: View {
     @ObservedObject var playback: MediaOverlayPlaybackController
     @Binding var playbackSpeed: Double
+    let playbackJumpInterval: Double
     @Binding var fontSize: Double
     @Binding var isSpeedControlPresented: Bool
     @Binding var isReaderSettingsControlPresented: Bool
@@ -1284,9 +1079,14 @@ private struct MediaOverlayPlaybackBar: View {
                 .frame(maxWidth: .infinity)
 
                 Button(action: previous) {
-                    Image(systemName: "backward.fill")
+                    Image(systemName: ReaderSettings.playbackJumpSymbolName(playbackJumpInterval, direction: .backward))
+                        .font(.title3.weight(.medium))
+                        .frame(width: 36, height: 36)
+                        .foregroundStyle(.blue)
                 }
-                .disabled(playback.currentClipIndex == nil || playback.currentClipIndex == 0)
+                .accessibilityLabel(ReaderSettings.playbackJumpAccessibilityLabel(playbackJumpInterval, direction: .backward))
+                .buttonStyle(.plain)
+                .disabled(!playback.canJumpBackward)
                 .frame(maxWidth: .infinity)
 
                 Button(action: playPause) {
@@ -1299,9 +1099,14 @@ private struct MediaOverlayPlaybackBar: View {
                 .frame(maxWidth: .infinity)
 
                 Button(action: next) {
-                    Image(systemName: "forward.fill")
+                    Image(systemName: ReaderSettings.playbackJumpSymbolName(playbackJumpInterval, direction: .forward))
+                        .font(.title3.weight(.medium))
+                        .frame(width: 36, height: 36)
+                        .foregroundStyle(.blue)
                 }
-                .disabled(!canGoForward)
+                .accessibilityLabel(ReaderSettings.playbackJumpAccessibilityLabel(playbackJumpInterval, direction: .forward))
+                .buttonStyle(.plain)
+                .disabled(!playback.canJumpForward)
                 .frame(maxWidth: .infinity)
 
                 Button(action: toggleReaderSettingsControl) {
@@ -1319,13 +1124,6 @@ private struct MediaOverlayPlaybackBar: View {
         }
         .animation(.easeInOut(duration: 0.2), value: isSpeedControlPresented)
         .animation(.easeInOut(duration: 0.2), value: isReaderSettingsControlPresented)
-    }
-
-    private var canGoForward: Bool {
-        guard let currentClipIndex = playback.currentClipIndex else {
-            return false
-        }
-        return currentClipIndex < playback.clips.count - 1
     }
 }
 
@@ -1390,13 +1188,11 @@ private func flattenChapterLinks(_ links: [ReadiumShared.Link], level: Int = 0) 
 private struct EPUBNavigatorHost: UIViewControllerRepresentable {
     let navigator: EPUBNavigatorViewController
     let onLocationDidChange: (Locator) -> Void
-    let onViewportDidChange: () -> Void
     let onAudioTap: (EPUBReference) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
             onLocationDidChange: onLocationDidChange,
-            onViewportDidChange: onViewportDidChange,
             onAudioTap: onAudioTap
         )
     }
@@ -1409,7 +1205,6 @@ private struct EPUBNavigatorHost: UIViewControllerRepresentable {
 
     func updateUIViewController(_ uiViewController: EPUBNavigatorViewController, context: Context) {
         context.coordinator.onLocationDidChange = onLocationDidChange
-        context.coordinator.onViewportDidChange = onViewportDidChange
         context.coordinator.onAudioTap = onAudioTap
         context.coordinator.attach(to: uiViewController)
         uiViewController.delegate = context.coordinator
@@ -1422,7 +1217,6 @@ private struct EPUBNavigatorHost: UIViewControllerRepresentable {
         }
 
         var onLocationDidChange: (Locator) -> Void
-        var onViewportDidChange: () -> Void
         var onAudioTap: (EPUBReference) -> Void
         private weak var navigator: EPUBNavigatorViewController?
         private var panRecognizer: UIPanGestureRecognizer?
@@ -1439,11 +1233,9 @@ private struct EPUBNavigatorHost: UIViewControllerRepresentable {
 
         init(
             onLocationDidChange: @escaping (Locator) -> Void,
-            onViewportDidChange: @escaping () -> Void,
             onAudioTap: @escaping (EPUBReference) -> Void
         ) {
             self.onLocationDidChange = onLocationDidChange
-            self.onViewportDidChange = onViewportDidChange
             self.onAudioTap = onAudioTap
         }
 
@@ -1470,7 +1262,6 @@ private struct EPUBNavigatorHost: UIViewControllerRepresentable {
             } else if currentBoundaryEdge() != armedBoundaryEdge {
                 armedBoundaryEdge = nil
             }
-            onViewportDidChange()
         }
 
         func navigator(_ navigator: EPUBNavigatorViewController, setupUserScripts userContentController: WKUserContentController) {
