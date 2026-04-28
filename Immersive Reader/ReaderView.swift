@@ -1368,6 +1368,7 @@ private struct ReaderTypographyControlPanel: View {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
                         Text("Font Size")
+                            .font(.subheadline.weight(.semibold))
                         Spacer()
                         Text(fontSize.formatted(.number.precision(.fractionLength(1))))
                             .foregroundStyle(.secondary)
