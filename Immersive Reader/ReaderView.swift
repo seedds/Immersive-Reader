@@ -1258,13 +1258,11 @@ private struct MediaOverlayPlaybackBar: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if isSpeedControlPresented || isReaderSettingsControlPresented {
-                HStack(alignment: .bottom, spacing: 16) {
+                Group {
                     if isSpeedControlPresented {
                         PlaybackSpeedControlPanel(playbackSpeed: $playbackSpeed)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
-
-                    Spacer(minLength: 0)
 
                     if isReaderSettingsControlPresented {
                         ReaderTypographyControlPanel(fontSize: $fontSize)
@@ -1335,7 +1333,7 @@ private struct PlaybackSpeedControlPanel: View {
     @Binding var playbackSpeed: Double
 
     var body: some View {
-        ReaderControlPanel(width: 240) {
+        ReaderControlPanel {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     Text("Playback Speed")
@@ -1365,11 +1363,8 @@ private struct ReaderTypographyControlPanel: View {
     @Binding var fontSize: Double
 
     var body: some View {
-        ReaderControlPanel(width: 240) {
+        ReaderControlPanel {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Reader Settings")
-                    .font(.subheadline.weight(.semibold))
-
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
                         Text("Font Size")
@@ -1393,13 +1388,12 @@ private struct ReaderTypographyControlPanel: View {
 }
 
 private struct ReaderControlPanel<Content: View>: View {
-    let width: CGFloat
     @ViewBuilder let content: Content
 
     var body: some View {
         content
             .padding(14)
-            .frame(width: width)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
