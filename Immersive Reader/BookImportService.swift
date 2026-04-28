@@ -488,7 +488,7 @@ enum BookImportService {
 
         let destinationURL = stagedLibraryFile.fileURL
         let fingerprint = try sourceFileFingerprint(for: destinationURL)
-        if existingBookStrategy != .overwrite,
+        if case .skip = existingBookStrategy,
            let existingBook,
            shouldSkipPreparedBook(for: destinationURL, existingBook: existingBook, fingerprint: fingerprint) {
             await reportImportProgress(
@@ -585,6 +585,8 @@ enum BookImportService {
             using: progressHandler
         )
 
+        let shouldMoveUploadedSource = shouldMoveUploadedSourceIntoLibrary(sourceURL)
+
         guard sourcePath != destinationPath else {
             return StagedLibraryFile(fileURL: destinationURL, shouldCleanupOnFailure: false)
         }
@@ -593,7 +595,7 @@ enum BookImportService {
             try fileManager.removeItem(at: destinationURL)
         }
 
-        if shouldMoveUploadedSourceIntoLibrary(sourceURL) {
+        if shouldMoveUploadedSource {
             try fileManager.moveItem(at: sourceURL, to: destinationURL)
         } else {
             try fileManager.copyItem(at: sourceURL, to: destinationURL)
@@ -722,16 +724,23 @@ enum BookImportService {
         existingBook: ExistingBookSnapshot,
         fingerprint: SourceFileFingerprint
     ) -> Bool {
-        guard fingerprint.fileSize == existingBook.sourceFileSize,
-              existingBook.epubFilePath == libraryFileURL.path,
-              FileManager.default.fileExists(atPath: existingBook.epubFilePath),
-              FileManager.default.fileExists(atPath: existingBook.extractedDirectoryPath)
+        let fileManager = FileManager.default
+        let fileSizeMatches = fingerprint.fileSize == existingBook.sourceFileSize
+        let storedFilename = URL(fileURLWithPath: existingBook.epubFilePath).lastPathComponent
+        let libraryFilename = libraryFileURL.lastPathComponent
+        let filenameMatches = storedFilename == libraryFilename
+        let epubExists = fileManager.fileExists(atPath: existingBook.epubFilePath)
+        let extractedExists = fileManager.fileExists(atPath: existingBook.extractedDirectoryPath)
+        guard fileSizeMatches,
+              filenameMatches,
+              epubExists,
+              extractedExists
         else {
             return false
         }
 
         if let mediaOverlayJSONPath = existingBook.mediaOverlayJSONPath {
-            return FileManager.default.fileExists(atPath: mediaOverlayJSONPath)
+            return fileManager.fileExists(atPath: mediaOverlayJSONPath)
         }
 
         return true

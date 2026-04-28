@@ -65,7 +65,7 @@ private struct BooksView: View {
                 } else {
                     List {
                         ForEach(books) { book in
-                            BookRow(book: book, showsSeparator: book.id != books.last?.id)
+                            BookRow(book: book, showsTopSeparator: book.id == books.first?.id)
                                 .contentShape(Rectangle())
                                 .listRowInsets(EdgeInsets())
                                 .listRowSeparator(.hidden)
@@ -252,10 +252,16 @@ private struct BooksView: View {
 
 private struct BookRow: View {
     let book: Book
-    let showsSeparator: Bool
+    let showsTopSeparator: Bool
 
     var body: some View {
         VStack(spacing: 0) {
+            if showsTopSeparator {
+                Rectangle()
+                    .fill(Color(uiColor: .separator))
+                    .frame(height: 1)
+            }
+
             HStack(spacing: 14) {
                 BookCoverView(book: book)
 
@@ -290,11 +296,9 @@ private struct BookRow: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
 
-            if showsSeparator {
-                Rectangle()
-                    .fill(Color(uiColor: .separator))
-                    .frame(height: 1)
-            }
+            Rectangle()
+                .fill(Color(uiColor: .separator))
+                .frame(height: 1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -644,12 +648,12 @@ private struct SettingsView: View {
                 }
 
                 Section("Appearance") {
-                    Picker("Theme", selection: $themeRawValue) {
-                        ForEach(AppThemeOption.allCases) { option in
-                            Text(option.name).tag(option.rawValue)
-                        }
-                    }
-                    .pickerStyle(.segmented)
+                   Picker("Theme", selection: $themeRawValue) {
+                       ForEach(AppThemeOption.allCases) { option in
+                           Text(option.name).tag(option.rawValue)
+                       }
+                   }
+                   .pickerStyle(.segmented)
 
                     NavigationLink {
                         ReadAloudColorEditor(colorHex: $readAloudColorRawValue)
