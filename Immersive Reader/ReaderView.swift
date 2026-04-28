@@ -1334,27 +1334,16 @@ private struct PlaybackSpeedControlPanel: View {
 
     var body: some View {
         ReaderControlPanel {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Text("Playback Speed")
-                        .font(.subheadline.weight(.semibold))
-
-                    Spacer(minLength: 12)
-
-                    Text(ReaderSettings.playbackSpeedText(playbackSpeed))
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-
-                Slider(
-                    value: Binding(
-                        get: { ReaderSettings.normalizedPlaybackSpeed(playbackSpeed) },
-                        set: { playbackSpeed = ReaderSettings.normalizedPlaybackSpeed($0) }
-                    ),
-                    in: ReaderSettings.playbackSpeedRange,
-                    step: ReaderSettings.playbackSpeedStep
-                )
-            }
+            ReaderSettingSliderRow(
+                title: "Playback Speed",
+                valueText: ReaderSettings.playbackSpeedText(playbackSpeed),
+                value: Binding(
+                    get: { ReaderSettings.normalizedPlaybackSpeed(playbackSpeed) },
+                    set: { playbackSpeed = ReaderSettings.normalizedPlaybackSpeed($0) }
+                ),
+                range: ReaderSettings.playbackSpeedRange,
+                step: ReaderSettings.playbackSpeedStep
+            )
         }
     }
 }
@@ -1364,26 +1353,16 @@ private struct ReaderTypographyControlPanel: View {
 
     var body: some View {
         ReaderControlPanel {
-            VStack(alignment: .leading, spacing: 12) {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        Text("Font Size")
-                            .font(.subheadline.weight(.semibold))
-                        Spacer()
-                        Text(fontSize.formatted(.number.precision(.fractionLength(1))))
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Slider(
-                        value: Binding(
-                            get: { ReaderSettings.normalizedFontSize(fontSize) },
-                            set: { fontSize = ReaderSettings.normalizedFontSize($0) }
-                        ),
-                        in: ReaderSettings.fontSizeRange,
-                        step: ReaderSettings.fontSizeStep
-                    )
-                }
-            }
+            ReaderSettingSliderRow(
+                title: "Font Size",
+                valueText: ReaderSettings.fontSizeText(fontSize),
+                value: Binding(
+                    get: { ReaderSettings.normalizedFontSize(fontSize) },
+                    set: { fontSize = ReaderSettings.normalizedFontSize($0) }
+                ),
+                range: ReaderSettings.fontSizeRange,
+                step: ReaderSettings.fontSizeStep
+            )
         }
     }
 }

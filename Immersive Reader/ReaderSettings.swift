@@ -83,6 +83,11 @@ nonisolated enum ReaderSettings {
         return "\(numberText)x"
     }
 
+    static func fontSizeText(_ value: Double) -> String {
+        normalizedFontSize(value)
+            .formatted(.number.precision(.fractionLength(1)))
+    }
+
     static func uiColor(from rawValue: String) -> UIColor {
         colorHex(from: rawValue)
             .flatMap(uiColor(hex:))
@@ -262,6 +267,31 @@ enum AppThemeOption: String, CaseIterable, Identifiable {
             return .light
         case .dark:
             return .dark
+        }
+    }
+}
+
+struct ReaderSettingSliderRow: View {
+    let title: String
+    let valueText: String
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    let step: Double
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+
+                Spacer(minLength: 12)
+
+                Text(valueText)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+            Slider(value: $value, in: range, step: step)
         }
     }
 }

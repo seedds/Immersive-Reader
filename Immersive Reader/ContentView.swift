@@ -599,6 +599,8 @@ private struct SettingsView: View {
     @SwiftUI.AppStorage(ReaderSettings.themeKey) private var themeRawValue = AppThemeOption.system.rawValue
     @SwiftUI.AppStorage(ReaderSettings.readAloudColorKey) private var readAloudColorRawValue = ReaderSettings.defaultReadAloudColorHex
     @SwiftUI.AppStorage(ReaderSettings.playbackSpeedKey) private var playbackSpeed = ReaderSettings.defaultPlaybackSpeed
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Namespace private var themeNamespace
 
     var body: some View {
         NavigationStack {
@@ -648,10 +650,15 @@ private struct SettingsView: View {
                 }
 
                 Section("Appearance") {
-                    ThemeSelectionControl(themeRawValue: $themeRawValue)
+                    Picker("Theme", selection: $themeRawValue) {
+                        ForEach(AppThemeOption.allCases) { option in
+                            Text(option.name).tag(option.rawValue)
+                        }
+                    }
+                    .pickerStyle(.segmented)
 
-                    NavigationLink {
-                        ReadAloudColorEditor(colorHex: $readAloudColorRawValue)
+                     NavigationLink {
+                         ReadAloudColorEditor(colorHex: $readAloudColorRawValue)
                             .padding(.horizontal, 16)
                             .padding(.top, 12)
                             .padding(.bottom, 16)
@@ -681,78 +688,19 @@ private struct SettingsView: View {
     }
 }
 
-private struct ThemeSelectionControl: View {
-    @Binding var themeRawValue: String
-
-    @Namespace private var selectionNamespace
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-
-    private var currentTheme: AppThemeOption {
-        ReaderSettings.appTheme(from: themeRawValue)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Theme")
-
-            Group {
-                if dynamicTypeSize.isAccessibilitySize {
-                    VStack(spacing: 6) {
-                        buttons
-                    }
-                } else {
-                    HStack(spacing: 6) {
-                        buttons
-                    }
-                }
-            }
-            .padding(5)
-            .themeSelectionBackground(isAccessibilityLayout: dynamicTypeSize.isAccessibilitySize)
-        }
-        .sensoryFeedback(.selection, trigger: themeRawValue)
-        .accessibilityElement(children: .contain)
-    }
-
-    private var buttons: some View {
-        ForEach(AppThemeOption.allCases) { option in
-            let isSelected = currentTheme == option
-
-            Button {
-                withAnimation(.bouncy(duration: 0.34, extraBounce: 0.08)) {
-                    themeRawValue = option.rawValue
-                }
-            } label: {
-                Text(option.name)
-                    .font(.body)
-                    .fontWeight(isSelected ? .semibold : .regular)
-                    .foregroundStyle(isSelected ? .primary : .secondary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-                    .padding(.horizontal, 12)
-                    .contentShape(.rect)
-            }
-            .buttonStyle(.plain)
-            .scaleEffect(isSelected ? 1.0 : 0.96)
-            .background {
-                if isSelected {
-                    Capsule()
-                        .fill(.regularMaterial)
-                        .matchedGeometryEffect(id: "themeSelection", in: selectionNamespace)
-                        .shadow(color: .black.opacity(0.12), radius: 2, y: 1)
-                }
-            }
-            .accessibilityAddTraits(isSelected ? .isSelected : [])
-        }
-    }
-}
-
 private extension View {
     @ViewBuilder
-    func themeSelectionBackground(isAccessibilityLayout: Bool) -> some View {
-        if isAccessibilityLayout {
-            self.glassEffect(.regular, in: .rect(cornerRadius: 20))
+    func liquidGlassCapsule() -> some View {
+        if #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) {
+            self
+                .glassEffect(.regular, in: .capsule)
         } else {
-            self.glassEffect(.regular, in: .capsule)
+            self
+                .background(.thinMaterial, in: Capsule())
+                .overlay {
+                    Capsule()
+                        .stroke(.white.opacity(0.25), lineWidth: 1)
+                }
         }
     }
 }
