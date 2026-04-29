@@ -12,22 +12,10 @@ It focuses on EPUB3 reading with synced read-aloud playback, active text highlig
 
 ## Features
 
-- EPUB import from Files
 - Local network upload server for `.epub` files
-- SwiftData-backed library management
-- Readium-based EPUB rendering
-- Reading progress persistence and restore
-- EPUB metadata and cover extraction
-- EPUB3 media overlay parsing
 - Read-aloud playback with active text highlighting
-- Customizable highlight color
-- Chapter drawer navigation
 - Tap-to-play on spoken text
-- Scroll-stop retargeting to the visible spoken line
-- Reader font size, font family, and line height settings
-- App theme selection: System, Light, or Dark
-- Resume the last played audio segment for each book
-- Files app exposure for imported EPUBs
+- Auto scroll with continuous reading
 
 ## App Structure
 
