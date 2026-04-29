@@ -1079,10 +1079,9 @@ private struct MediaOverlayPlaybackBar: View {
             HStack(spacing: 0) {
                 Button(action: toggleSpeedControl) {
                     Text(ReaderSettings.playbackSpeedText(playbackSpeed))
-                        .fontWeight(.medium)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(Color(uiColor: .secondarySystemFill), in: Capsule())
+                        .font(.body.weight(.medium))
+                        .frame(width: 48, height: 48)
+                        .background(Color(uiColor: .secondarySystemFill), in: Circle())
                 }
                 .buttonStyle(.plain)
                 .frame(maxWidth: .infinity)
@@ -1121,7 +1120,7 @@ private struct MediaOverlayPlaybackBar: View {
                 Button(action: toggleReaderSettingsControl) {
                     Image(systemName: "textformat.size")
                         .font(.body.weight(.medium))
-                        .frame(width: 36, height: 36)
+                        .frame(width: 48, height: 48)
                         .background(Color(uiColor: .secondarySystemFill), in: Circle())
                 }
                 .buttonStyle(.plain)
