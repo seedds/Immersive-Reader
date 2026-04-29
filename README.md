@@ -4,6 +4,16 @@ ImmersiveReader is an iOS/iPadOS EPUB reader built with SwiftUI, SwiftData, and 
 
 It focuses on EPUB3 reading with synced read-aloud playback, active text highlighting, upload/import workflows, reading progress restore, chapter navigation, reader appearance controls, and resume-aware playback.
 
+## Screenshots
+
+| Reader | Library |
+| --- | --- |
+| <img src="docs/images/reader.png" width="260" alt="Reader view with active text highlighting and playback controls"> | <img src="docs/images/library.png" width="260" alt="Library tab showing imported books"> |
+
+| Upload | Settings |
+| --- | --- |
+| <img src="docs/images/upload.png" width="260" alt="Upload tab with local server status and recent uploads"> | <img src="docs/images/settings.png" width="260" alt="Settings tab with reader appearance and playback controls"> |
+
 ## Features
 
 - EPUB import from Files
