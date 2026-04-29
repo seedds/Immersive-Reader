@@ -80,6 +80,8 @@ struct ReaderView: View {
                                     if playback.state.isPlaying {
                                         playback.pause(reason: "playPauseButton.pause")
                                         applyCurrentClipDecoration(with: navigator)
+                                    } else if playback.currentClipIndex != nil {
+                                        playback.play(reason: "playPauseButton.resumeCurrentClip")
                                     } else {
                                         Task {
                                             await startPlaybackFromVisibleOrForwardPosition(with: navigator)
@@ -1081,7 +1083,7 @@ private struct MediaOverlayPlaybackBar: View {
                 Button(action: previous) {
                     Image(systemName: ReaderSettings.playbackJumpSymbolName(playbackJumpInterval, direction: .backward))
                         .font(.title3.weight(.medium))
-                        .frame(width: 36, height: 36)
+                        .frame(width: 48, height: 48)
                         .foregroundStyle(.blue)
                 }
                 .accessibilityLabel(ReaderSettings.playbackJumpAccessibilityLabel(playbackJumpInterval, direction: .backward))
@@ -1091,7 +1093,7 @@ private struct MediaOverlayPlaybackBar: View {
 
                 Button(action: playPause) {
                     Image(systemName: playback.state.isPlaying ? "pause.fill" : "play.fill")
-                        .frame(width: 36, height: 36)
+                        .frame(width: 48, height: 48)
                         .background(.blue, in: Circle())
                         .foregroundStyle(.white)
                 }
@@ -1101,7 +1103,7 @@ private struct MediaOverlayPlaybackBar: View {
                 Button(action: next) {
                     Image(systemName: ReaderSettings.playbackJumpSymbolName(playbackJumpInterval, direction: .forward))
                         .font(.title3.weight(.medium))
-                        .frame(width: 36, height: 36)
+                        .frame(width: 48, height: 48)
                         .foregroundStyle(.blue)
                 }
                 .accessibilityLabel(ReaderSettings.playbackJumpAccessibilityLabel(playbackJumpInterval, direction: .forward))
