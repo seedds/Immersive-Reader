@@ -595,6 +595,7 @@ private struct UploadView: View {
 
 private struct SettingsView: View {
     @SwiftUI.AppStorage(ReaderSettings.fontSizeKey) private var fontSize = ReaderSettings.defaultFontSize
+    @SwiftUI.AppStorage(ReaderSettings.lineHeightKey) private var lineHeight = ReaderSettings.defaultLineHeight
     @SwiftUI.AppStorage(ReaderSettings.fontFamilyKey) private var fontFamilyRawValue = ""
     @SwiftUI.AppStorage(ReaderSettings.themeKey) private var themeRawValue = AppThemeOption.system.rawValue
     @SwiftUI.AppStorage(ReaderSettings.readAloudColorKey) private var readAloudColorRawValue = ReaderSettings.defaultReadAloudColorHex
@@ -620,7 +621,7 @@ private struct SettingsView: View {
                         HStack {
                             Text("Font Size")
                             Spacer()
-                            Text(fontSize.formatted(.number.precision(.fractionLength(1))))
+                            Text(ReaderSettings.fontSizeText(fontSize))
                                 .foregroundStyle(.secondary)
                         }
 
@@ -631,6 +632,24 @@ private struct SettingsView: View {
                             ),
                             in: ReaderSettings.fontSizeRange,
                             step: ReaderSettings.fontSizeStep
+                        )
+                    }
+
+                    VStack(alignment: .leading, spacing: 0) {
+                        HStack {
+                            Text("Line Height")
+                            Spacer()
+                            Text(ReaderSettings.lineHeightText(lineHeight))
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Slider(
+                            value: Binding(
+                                get: { ReaderSettings.normalizedLineHeight(lineHeight) },
+                                set: { lineHeight = ReaderSettings.normalizedLineHeight($0) }
+                            ),
+                            in: ReaderSettings.lineHeightRange,
+                            step: ReaderSettings.lineHeightStep
                         )
                     }
 

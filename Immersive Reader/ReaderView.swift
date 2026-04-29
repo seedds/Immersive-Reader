@@ -16,6 +16,7 @@ struct ReaderView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.modelContext) private var modelContext
     @SwiftUI.AppStorage(ReaderSettings.fontSizeKey) private var readerFontSize = ReaderSettings.defaultFontSize
+    @SwiftUI.AppStorage(ReaderSettings.lineHeightKey) private var readerLineHeight = ReaderSettings.defaultLineHeight
     @SwiftUI.AppStorage(ReaderSettings.fontFamilyKey) private var readerFontFamilyRawValue = ""
     @SwiftUI.AppStorage(ReaderSettings.themeKey) private var readerThemeRawValue = AppThemeOption.system.rawValue
     @SwiftUI.AppStorage(ReaderSettings.readAloudColorKey) private var readerReadAloudColorRawValue = ReaderSettings.defaultReadAloudColorHex
@@ -72,6 +73,7 @@ struct ReaderView: View {
                                 playbackSpeed: $readerPlaybackSpeed,
                                 playbackJumpInterval: readerPlaybackJumpInterval,
                                 fontSize: $readerFontSize,
+                                lineHeight: $readerLineHeight,
                                 isSpeedControlPresented: $isPlaybackSpeedControlPresented,
                                 isReaderSettingsControlPresented: $isReaderSettingsControlPresented,
                                 toggleSpeedControl: togglePlaybackSpeedControl,
@@ -148,6 +150,9 @@ struct ReaderView: View {
                     }
                 }
                 .onChange(of: readerFontSize) { _, _ in
+                    applyReaderPreferences(to: navigator)
+                }
+                .onChange(of: readerLineHeight) { _, _ in
                     applyReaderPreferences(to: navigator)
                 }
                 .onChange(of: readerFontFamilyRawValue) { _, _ in
@@ -248,6 +253,7 @@ struct ReaderView: View {
         EPUBPreferences(
             fontFamily: ReaderSettings.fontFamily(from: readerFontFamilyRawValue),
             fontSize: ReaderSettings.normalizedFontSize(readerFontSize),
+            lineHeight: ReaderSettings.normalizedLineHeight(readerLineHeight),
             publisherStyles: false,
             scroll: true,
             theme: ReaderSettings.appTheme(from: readerThemeRawValue).readiumTheme(for: colorScheme)
@@ -1044,6 +1050,7 @@ private struct MediaOverlayPlaybackBar: View {
     @Binding var playbackSpeed: Double
     let playbackJumpInterval: Double
     @Binding var fontSize: Double
+    @Binding var lineHeight: Double
     @Binding var isSpeedControlPresented: Bool
     @Binding var isReaderSettingsControlPresented: Bool
     let toggleSpeedControl: () -> Void
@@ -1062,7 +1069,7 @@ private struct MediaOverlayPlaybackBar: View {
                     }
 
                     if isReaderSettingsControlPresented {
-                        ReaderTypographyControlPanel(fontSize: $fontSize)
+                        ReaderTypographyControlPanel(fontSize: $fontSize, lineHeight: $lineHeight)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
                 }
@@ -1150,19 +1157,33 @@ private struct PlaybackSpeedControlPanel: View {
 
 private struct ReaderTypographyControlPanel: View {
     @Binding var fontSize: Double
+    @Binding var lineHeight: Double
 
     var body: some View {
         ReaderControlPanel {
-            ReaderSettingSliderRow(
-                title: "Font Size",
-                valueText: ReaderSettings.fontSizeText(fontSize),
-                value: Binding(
-                    get: { ReaderSettings.normalizedFontSize(fontSize) },
-                    set: { fontSize = ReaderSettings.normalizedFontSize($0) }
-                ),
-                range: ReaderSettings.fontSizeRange,
-                step: ReaderSettings.fontSizeStep
-            )
+            VStack(spacing: 14) {
+                ReaderSettingSliderRow(
+                    title: "Font Size",
+                    valueText: ReaderSettings.fontSizeText(fontSize),
+                    value: Binding(
+                        get: { ReaderSettings.normalizedFontSize(fontSize) },
+                        set: { fontSize = ReaderSettings.normalizedFontSize($0) }
+                    ),
+                    range: ReaderSettings.fontSizeRange,
+                    step: ReaderSettings.fontSizeStep
+                )
+
+                ReaderSettingSliderRow(
+                    title: "Line Height",
+                    valueText: ReaderSettings.lineHeightText(lineHeight),
+                    value: Binding(
+                        get: { ReaderSettings.normalizedLineHeight(lineHeight) },
+                        set: { lineHeight = ReaderSettings.normalizedLineHeight($0) }
+                    ),
+                    range: ReaderSettings.lineHeightRange,
+                    step: ReaderSettings.lineHeightStep
+                )
+            }
         }
     }
 }
@@ -1269,6 +1290,13 @@ private struct EPUBNavigatorHost: UIViewControllerRepresentable {
         func navigator(_ navigator: EPUBNavigatorViewController, setupUserScripts userContentController: WKUserContentController) {
             userContentController.removeScriptMessageHandler(forName: audioTapMessageName)
             userContentController.add(self, name: audioTapMessageName)
+            userContentController.addUserScript(
+                WKUserScript(
+                    source: lineHeightOverrideScript(),
+                    injectionTime: .atDocumentEnd,
+                    forMainFrameOnly: true
+                )
+            )
             userContentController.addUserScript(
                 WKUserScript(
                     source: audioTapScript(messageName: audioTapMessageName),
@@ -1444,6 +1472,28 @@ private struct EPUBNavigatorHost: UIViewControllerRepresentable {
                   fragmentID: element.id || null
                 });
               }, true);
+            })();
+            """
+        }
+
+        private func lineHeightOverrideScript() -> String {
+            """
+            (() => {
+              const styleID = 'immersive-reader-line-height-override';
+              if (document.getElementById(styleID)) {
+                return;
+              }
+
+              const style = document.createElement('style');
+              style.id = styleID;
+              style.textContent = `
+                :root[style*="readium-advanced-on"][style*="--USER__lineHeight"] body,
+                :root[style*="readium-advanced-on"][style*="--USER__lineHeight"] body *:not(img):not(svg):not(video):not(audio):not(canvas):not(iframe) {
+                  line-height: inherit !important;
+                }
+              `;
+
+              (document.head || document.documentElement).appendChild(style);
             })();
             """
         }

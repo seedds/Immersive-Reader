@@ -12,6 +12,7 @@ import UIKit
 
 nonisolated enum ReaderSettings {
     static let fontSizeKey = "readerFontSize"
+    static let lineHeightKey = "readerLineHeight"
     static let fontFamilyKey = "readerFontFamily"
     static let themeKey = "readerTheme"
     static let readAloudColorKey = "readerReadAloudColor"
@@ -19,13 +20,16 @@ nonisolated enum ReaderSettings {
     static let playbackJumpIntervalKey = "readerPlaybackJumpInterval"
     static let uploadServerPortKey = "uploadServerPort"
     static let defaultFontSize = 1.2
+    static let defaultLineHeight = 1.2
     static let defaultReadAloudColorHex = "#34C759"
     static let defaultPlaybackSpeed = 1.0
     static let defaultPlaybackJumpInterval = 15.0
     static let defaultUploadServerPort = 80
     static let fontSizeRange = 0.8 ... 2.0
+    static let lineHeightRange = 1.0 ... 2.0
     static let playbackSpeedRange = 0.5 ... 2.0
     static let fontSizeStep = 0.1
+    static let lineHeightStep = 0.1
     static let playbackSpeedStep = 0.1
     static let playbackJumpIntervalOptions = [15.0, 30.0, 45.0, 60.0]
 
@@ -55,6 +59,10 @@ nonisolated enum ReaderSettings {
 
     static func normalizedFontSize(_ value: Double) -> Double {
         min(max(value, fontSizeRange.lowerBound), fontSizeRange.upperBound)
+    }
+
+    static func normalizedLineHeight(_ value: Double) -> Double {
+        min(max(value, lineHeightRange.lowerBound), lineHeightRange.upperBound)
     }
 
     static func normalizedPlaybackSpeed(_ value: Double) -> Double {
@@ -123,6 +131,11 @@ nonisolated enum ReaderSettings {
 
     static func fontSizeText(_ value: Double) -> String {
         normalizedFontSize(value)
+            .formatted(.number.precision(.fractionLength(1)))
+    }
+
+    static func lineHeightText(_ value: Double) -> String {
+        normalizedLineHeight(value)
             .formatted(.number.precision(.fractionLength(1)))
     }
 
