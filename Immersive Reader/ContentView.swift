@@ -691,9 +691,20 @@ private struct SettingsView: View {
                         )
                     }
 
-                    Picker("Font Family", selection: $fontFamilyRawValue) {
-                        ForEach(ReaderSettings.fontFamilyOptions(customFontFamilies: customFontFamilies)) { option in
-                            Text(option.name).tag(option.id)
+                    NavigationLink {
+                        FontFamilySelectionView(
+                            selectedFontFamilyRawValue: $fontFamilyRawValue,
+                            customFontFamilies: customFontFamilies
+                        )
+                        .toolbar(.hidden, for: .tabBar)
+                    } label: {
+                        HStack {
+                            Text("Font Family")
+
+                            Spacer()
+
+                            Text(selectedFontFamilyName)
+                                .foregroundStyle(.secondary)
                         }
                     }
 
@@ -757,6 +768,10 @@ private struct SettingsView: View {
         }
 
         return customFontFamilies.count == 1 ? "1 family" : "\(customFontFamilies.count) families"
+    }
+
+    private var selectedFontFamilyName: String {
+        ReaderSettings.fontFamilyName(from: fontFamilyRawValue, customFontFamilies: customFontFamilies)
     }
 
     private func playbackJumpIntervalIndex(for value: Double) -> Int {

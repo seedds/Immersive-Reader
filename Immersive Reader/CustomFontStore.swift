@@ -80,7 +80,9 @@ enum CustomFontStore {
     }
 
     static func allFamilies() -> [ImportedFontFamily] {
-        synchronizedFamilies().families
+        let families = synchronizedFamilies().families
+        registerFontsForUI(in: families)
+        return families
     }
 
     @discardableResult
@@ -144,6 +146,7 @@ enum CustomFontStore {
         snapshot = sortedFamilies(snapshot)
         try save(families: snapshot)
         synchronizeSelectedFontFamily(with: snapshot)
+        registerFontsForUI(in: snapshot)
         return snapshot.filter { changedFamilyIDs.contains($0.id) }
     }
 
@@ -412,5 +415,23 @@ enum CustomFontStore {
         }
 
         defaults.set("", forKey: ReaderSettings.fontFamilyKey)
+    }
+
+    private static func registerFontsForUI(in families: [ImportedFontFamily]) {
+        guard let directory = try? AppStorage.customFontsDirectory() else {
+            return
+        }
+
+        for family in families {
+            for file in family.files {
+                let fileURL = directory.appendingPathComponent(file.storedFilename, isDirectory: false)
+                guard FileManager.default.fileExists(atPath: fileURL.path) else {
+                    continue
+                }
+
+                var registrationError: Unmanaged<CFError>?
+                CTFontManagerRegisterFontsForURL(fileURL as CFURL, .process, &registrationError)
+            }
+        }
     }
 }

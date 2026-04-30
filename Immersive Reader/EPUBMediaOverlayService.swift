@@ -293,7 +293,7 @@ nonisolated private final class SMILParser: NSObject, XMLParserDelegate {
             textResourceHref: textReference.resourceHref,
             fragmentID: textReference.fragmentID,
             audioHref: audioReference.resourceHref,
-            audioPath: audioReference.fileURL.path,
+            audioPath: audioReference.resourceHref,
             clipBegin: builder.clipBegin,
             clipEnd: builder.clipEnd
         )

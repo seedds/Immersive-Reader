@@ -33,6 +33,7 @@ struct ReaderView: View {
     @State private var readingOrderResourceHrefs: [String] = []
     @State private var isPlaybackSpeedControlPresented = false
     @State private var isReaderSettingsControlPresented = false
+    @State private var customFontFamilies: [CustomFontStore.ImportedFontFamily] = []
 
     var body: some View {
         Group {
@@ -74,6 +75,8 @@ struct ReaderView: View {
                                 playbackJumpInterval: readerPlaybackJumpInterval,
                                 fontSize: $readerFontSize,
                                 lineHeight: $readerLineHeight,
+                                fontFamilyRawValue: $readerFontFamilyRawValue,
+                                customFontFamilies: customFontFamilies,
                                 isSpeedControlPresented: $isPlaybackSpeedControlPresented,
                                 isReaderSettingsControlPresented: $isReaderSettingsControlPresented,
                                 toggleSpeedControl: togglePlaybackSpeedControl,
@@ -223,7 +226,8 @@ struct ReaderView: View {
         try? modelContext.save()
         playback.setPlaybackRate(readerPlaybackSpeed)
         playback.setJumpInterval(readerPlaybackJumpInterval)
-        playback.load(from: try? book.resolvedMediaOverlayJSONURL()?.path)
+        playback.load(from: try? book.resolvedMediaOverlayJSONURL())
+        customFontFamilies = CustomFontStore.allFamilies()
 
         do {
             let publication = try await ReadiumBookService.shared.openPublication(for: book)
@@ -266,8 +270,8 @@ struct ReaderView: View {
     }
 
     private func bundledFontFamilyDeclarations() -> [AnyHTMLFontFamilyDeclaration] {
-        guard let regularFont = bundledFontURL(named: "Literata-VariableFont_opsz,wght.ttf"),
-              let italicFont = bundledFontURL(named: "Literata-Italic-VariableFont_opsz,wght.ttf")
+        guard let regularFont = bundledFontURL(named: "Literata-VariableFont_opsz-wght.ttf"),
+              let italicFont = bundledFontURL(named: "Literata-Italic-VariableFont_opsz-wght.ttf")
         else {
             return []
         }
@@ -1095,6 +1099,8 @@ private struct MediaOverlayPlaybackBar: View {
     let playbackJumpInterval: Double
     @Binding var fontSize: Double
     @Binding var lineHeight: Double
+    @Binding var fontFamilyRawValue: String
+    let customFontFamilies: [CustomFontStore.ImportedFontFamily]
     @Binding var isSpeedControlPresented: Bool
     @Binding var isReaderSettingsControlPresented: Bool
     let toggleSpeedControl: () -> Void
@@ -1113,7 +1119,12 @@ private struct MediaOverlayPlaybackBar: View {
                     }
 
                     if isReaderSettingsControlPresented {
-                        ReaderTypographyControlPanel(fontSize: $fontSize, lineHeight: $lineHeight)
+                        ReaderTypographyControlPanel(
+                            fontSize: $fontSize,
+                            lineHeight: $lineHeight,
+                            fontFamilyRawValue: $fontFamilyRawValue,
+                            customFontFamilies: customFontFamilies
+                        )
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
                 }
@@ -1199,33 +1210,90 @@ private struct PlaybackSpeedControlPanel: View {
 }
 
 private struct ReaderTypographyControlPanel: View {
+    private enum PanelMode {
+        case typography
+        case fontFamilySelection
+    }
+
     @Binding var fontSize: Double
     @Binding var lineHeight: Double
+    @Binding var fontFamilyRawValue: String
+    let customFontFamilies: [CustomFontStore.ImportedFontFamily]
+    @State private var panelMode: PanelMode = .typography
 
     var body: some View {
         ReaderControlPanel {
-            VStack(spacing: 14) {
-                ReaderSettingSliderRow(
-                    title: "Font Size",
-                    valueText: ReaderSettings.fontSizeText(fontSize),
-                    value: Binding(
-                        get: { ReaderSettings.normalizedFontSize(fontSize) },
-                        set: { fontSize = ReaderSettings.normalizedFontSize($0) }
-                    ),
-                    range: ReaderSettings.fontSizeRange,
-                    step: ReaderSettings.fontSizeStep
-                )
+            switch panelMode {
+            case .typography:
+                VStack(spacing: 14) {
+                    ReaderSettingSliderRow(
+                        title: "Font Size",
+                        valueText: ReaderSettings.fontSizeText(fontSize),
+                        value: Binding(
+                            get: { ReaderSettings.normalizedFontSize(fontSize) },
+                            set: { fontSize = ReaderSettings.normalizedFontSize($0) }
+                        ),
+                        range: ReaderSettings.fontSizeRange,
+                        step: ReaderSettings.fontSizeStep
+                    )
 
-                ReaderSettingSliderRow(
-                    title: "Line Height",
-                    valueText: ReaderSettings.lineHeightText(lineHeight),
-                    value: Binding(
-                        get: { ReaderSettings.normalizedLineHeight(lineHeight) },
-                        set: { lineHeight = ReaderSettings.normalizedLineHeight($0) }
-                    ),
-                    range: ReaderSettings.lineHeightRange,
-                    step: ReaderSettings.lineHeightStep
-                )
+                    ReaderSettingSliderRow(
+                        title: "Line Height",
+                        valueText: ReaderSettings.lineHeightText(lineHeight),
+                        value: Binding(
+                            get: { ReaderSettings.normalizedLineHeight(lineHeight) },
+                            set: { lineHeight = ReaderSettings.normalizedLineHeight($0) }
+                        ),
+                        range: ReaderSettings.lineHeightRange,
+                        step: ReaderSettings.lineHeightStep
+                    )
+
+                    Button {
+                        panelMode = .fontFamilySelection
+                    } label: {
+                        HStack(spacing: 12) {
+                            Text("Font Family")
+                                .font(.subheadline.weight(.semibold))
+
+                            Spacer(minLength: 12)
+
+                            Text(ReaderSettings.fontFamilyName(from: fontFamilyRawValue, customFontFamilies: customFontFamilies))
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+
+                            Image(systemName: "chevron.right")
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+
+            case .fontFamilySelection:
+                VStack(alignment: .leading, spacing: 12) {
+                    Button {
+                        panelMode = .typography
+                    } label: {
+                        Label("Back", systemImage: "chevron.left")
+                            .font(.subheadline.weight(.semibold))
+                    }
+                    .buttonStyle(.plain)
+
+                    Divider()
+
+                    ScrollView {
+                        LazyVStack(spacing: 0) {
+                            FontFamilySelectionList(
+                                customFontFamilies: customFontFamilies,
+                                selectedFontFamilyRawValue: $fontFamilyRawValue,
+                                onSelect: { panelMode = .typography },
+                                showsSeparators: true
+                            )
+                        }
+                    }
+                    .frame(maxHeight: 260)
+                }
             }
         }
     }

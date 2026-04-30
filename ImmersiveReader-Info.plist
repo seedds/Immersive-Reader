@@ -35,8 +35,8 @@
 	</dict>
 	<key>UIAppFonts</key>
 	<array>
-		<string>Literata-VariableFont_opsz,wght.ttf</string>
-		<string>Literata-Italic-VariableFont_opsz,wght.ttf</string>
+		<string>Literata-VariableFont_opsz-wght.ttf</string>
+		<string>Literata-Italic-VariableFont_opsz-wght.ttf</string>
 	</array>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>

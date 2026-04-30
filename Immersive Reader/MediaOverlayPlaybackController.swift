@@ -50,11 +50,11 @@ final class MediaOverlayPlaybackController: ObservableObject {
         return clips[currentClipIndex]
     }
 
-    func load(from jsonPath: String?) {
+    func load(from jsonURL: URL?) {
         stop(reason: "load")
         cachedAudioDurations = [:]
 
-        guard let jsonPath else {
+        guard let jsonURL else {
             state = .unavailable
             clips = []
             currentClipIndex = nil
@@ -63,11 +63,27 @@ final class MediaOverlayPlaybackController: ObservableObject {
         }
 
         do {
-            let data = try Data(contentsOf: URL(fileURLWithPath: jsonPath))
+            let data = try Data(contentsOf: jsonURL)
             let manifest = try JSONDecoder().decode(EPUBMediaOverlayManifest.self, from: data)
-            clips = manifest.documents.flatMap(\.clips).filter { clip in
-                FileManager.default.fileExists(atPath: clip.audioPath)
-            }
+            let extractedDirectoryURL = jsonURL.deletingLastPathComponent()
+            clips = manifest.documents
+                .flatMap(\.clips)
+                .compactMap { clip in
+                    var resolvedClip = clip
+                    let audioFileURL: URL
+                    if clip.audioPath.hasPrefix("/") {
+                        audioFileURL = URL(fileURLWithPath: clip.audioPath)
+                    } else {
+                        audioFileURL = extractedDirectoryURL.appendingPathComponent(clip.audioPath, isDirectory: false)
+                    }
+
+                    guard FileManager.default.fileExists(atPath: audioFileURL.path) else {
+                        return nil
+                    }
+
+                    resolvedClip.audioPath = audioFileURL.path
+                    return resolvedClip
+                }
             currentClipIndex = nil
             state = clips.isEmpty ? .unavailable : .ready
             scheduleRefreshJumpAvailability()
