@@ -146,6 +146,11 @@ final class LocalUploadServer {
 private final class HTTPUploadConnection {
     typealias APICompletion = LocalUploadServer.APICompletion
 
+    private enum UploadKind {
+        case book
+        case customFont
+    }
+
     var onUploadStarted: ((LocalUploadServer.UploadTransferSnapshot) -> Void)?
     var onUploadProgress: ((LocalUploadServer.UploadTransferSnapshot) -> Void)?
     var onUploadFinished: ((UUID, URL, String) -> Void)?
@@ -276,8 +281,8 @@ private final class HTTPUploadConnection {
             return
         }
 
-        guard let filename = filename(from: target), filename.lowercased().hasSuffix(".epub") else {
-            finishWithHTTP(status: 415, body: "Only .epub uploads are supported")
+        guard let filename = filename(from: target), uploadKind(for: filename) != nil else {
+            finishWithHTTP(status: 415, body: "Only .epub, .ttf, and .otf uploads are supported")
             return
         }
 
@@ -624,19 +629,19 @@ private final class HTTPUploadConnection {
           </style>
         </head>
         <body>
-          <div class="page-drop-overlay">Drop EPUB files to start uploading</div>
+          <div class="page-drop-overlay">Drop EPUB or font files to start uploading</div>
           <main>
             <header>
               <h1>Immersive Reader Files</h1>
-              <p>Upload, rename, and delete EPUB files stored on this iPhone. Keep Immersive Reader open while managing files.</p>
+              <p>Upload EPUB books or custom font files. Keep Immersive Reader open while managing files.</p>
             </header>
 
             <section>
-              <h2>Upload EPUB</h2>
+              <h2>Upload Files</h2>
               <div class="drop" id="drop-zone">
-                <strong>Drop .epub files anywhere on this page</strong>
-                <p>Or choose one or more files below and uploads will start immediately.</p>
-                <input id="file" type="file" accept=".epub,application/epub+zip" multiple>
+                <strong>Drop .epub, .ttf, or .otf files anywhere on this page</strong>
+                <p>EPUBs are imported into your library. Fonts are imported into Reader &gt; Custom Fonts.</p>
+                <input id="file" type="file" accept=".epub,.ttf,.otf,application/epub+zip,font/ttf,font/otf,font/sfnt" multiple>
                 <div id="status"></div>
               </div>
               <div id="queue" class="queue">
@@ -758,7 +763,8 @@ private final class HTTPUploadConnection {
               let rejectedCount = 0;
 
               files.forEach(file => {
-                if (!file.name.toLowerCase().endsWith('.epub')) {
+                const kind = supportedUploadKind(file.name);
+                if (!kind) {
                   rejectedCount += 1;
                   queueItems.push({
                     id: `upload-${nextQueueID++}`,
@@ -769,7 +775,7 @@ private final class HTTPUploadConnection {
                     totalBytes: file.size || 0,
                     speedBytesPerSecond: 0,
                     status: 'failed',
-                    message: 'Only .epub files are supported.'
+                    message: 'Only .epub, .ttf, and .otf files are supported.'
                   });
                   return;
                 }
@@ -778,6 +784,7 @@ private final class HTTPUploadConnection {
                 queueItems.push({
                   id: `upload-${nextQueueID++}`,
                   file,
+                  kind,
                   name: file.name,
                   size: file.size || 0,
                   uploadedBytes: 0,
@@ -795,7 +802,7 @@ private final class HTTPUploadConnection {
               } else if (queuedCount) {
                 setStatus(`${queuedCount} file${queuedCount === 1 ? '' : 's'} queued for upload.`, 'success');
               } else if (rejectedCount) {
-                setStatus(`Only .epub files are supported. ${rejectedCount} skipped.`, 'error');
+                setStatus(`Only .epub, .ttf, and .otf files are supported. ${rejectedCount} skipped.`, 'error');
               }
 
               processQueue();
@@ -829,7 +836,7 @@ private final class HTTPUploadConnection {
 
                 const request = new XMLHttpRequest();
                 request.open('POST', '/upload?filename=' + encodeURIComponent(item.name));
-                request.setRequestHeader('Content-Type', 'application/epub+zip');
+                request.setRequestHeader('Content-Type', contentTypeForKind(item.kind));
 
                 request.upload.onprogress = event => {
                   item.uploadedBytes = event.loaded || 0;
@@ -854,11 +861,13 @@ private final class HTTPUploadConnection {
                     setStatus(`Uploaded ${item.name}.`, 'success');
                     renderQueue();
 
-                    try {
-                      await new Promise(resolveDelay => setTimeout(resolveDelay, 200));
-                      await loadBooks();
-                    } catch (error) {
-                      setStatus(`Uploaded ${item.name}, but could not refresh files: ${error.message}`, 'error');
+                    if (item.kind === 'book') {
+                      try {
+                        await new Promise(resolveDelay => setTimeout(resolveDelay, 200));
+                        await loadBooks();
+                      } catch (error) {
+                        setStatus(`Uploaded ${item.name}, but could not refresh files: ${error.message}`, 'error');
+                      }
                     }
                   } else {
                     item.status = 'failed';
@@ -893,6 +902,20 @@ private final class HTTPUploadConnection {
 
                 request.send(item.file);
               });
+            }
+
+            function supportedUploadKind(filename) {
+              const lowercasedName = String(filename || '').toLowerCase();
+              if (lowercasedName.endsWith('.epub')) return 'book';
+              if (lowercasedName.endsWith('.ttf') || lowercasedName.endsWith('.otf')) return 'font';
+              return null;
+            }
+
+            function contentTypeForKind(kind) {
+              if (kind === 'font') {
+                return 'font/sfnt';
+              }
+              return 'application/epub+zip';
             }
 
             function dragContainsFiles(event) {
@@ -937,7 +960,7 @@ private final class HTTPUploadConnection {
                 <article class="book" data-id="${escapeHTML(book.id)}" data-filename="${escapeHTML(book.filename)}">
                   <div>
                     <div class="title">${escapeHTML(book.title)}</div>
-                    <div class="meta">${escapeHTML(book.filename)} &middot; ${formatBytes(book.fileSize)}${book.hasMediaOverlay ? ` &middot; Read-aloud ready (${book.mediaOverlayClipCount} clips)` : ''}</div>
+                  <div class="meta">${escapeHTML(book.filename)} &middot; ${formatBytes(book.fileSize)}${book.hasMediaOverlay ? ` &middot; Read-aloud ready (${book.mediaOverlayClipCount} clips)` : ''}</div>
                   </div>
                   <div class="actions">
                     <button class="secondary" data-action="rename">Rename</button>
@@ -1019,5 +1042,17 @@ private final class HTTPUploadConnection {
         </body>
         </html>
         """
+    }
+
+    private func uploadKind(for filename: String) -> UploadKind? {
+        let pathExtension = URL(fileURLWithPath: filename).pathExtension.lowercased()
+        switch pathExtension {
+        case "epub":
+            return .book
+        case "ttf", "otf":
+            return .customFont
+        default:
+            return nil
+        }
     }
 }

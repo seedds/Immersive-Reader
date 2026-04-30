@@ -237,7 +237,7 @@ struct ReaderView: View {
                     preferences: preferences,
                     defaults: EPUBDefaults(scroll: true, spread: .never),
                     disablePageTurnsWhileScrolling: true,
-                    fontFamilyDeclarations: literataFontFamilyDeclarations()
+                    fontFamilyDeclarations: fontFamilyDeclarations()
                 )
             )
             navigator.submitPreferences(preferences)
@@ -261,7 +261,11 @@ struct ReaderView: View {
         )
     }
 
-    private func literataFontFamilyDeclarations() -> [AnyHTMLFontFamilyDeclaration] {
+    private func fontFamilyDeclarations() -> [AnyHTMLFontFamilyDeclaration] {
+        bundledFontFamilyDeclarations() + CustomFontStore.fontFamilyDeclarations()
+    }
+
+    private func bundledFontFamilyDeclarations() -> [AnyHTMLFontFamilyDeclaration] {
         guard let regularFont = bundledFontURL(named: "Literata-VariableFont_opsz,wght.ttf"),
               let italicFont = bundledFontURL(named: "Literata-Italic-VariableFont_opsz,wght.ttf")
         else {

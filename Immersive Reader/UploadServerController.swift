@@ -30,6 +30,11 @@ enum LocalLibraryError: LocalizedError {
 @MainActor
 final class UploadServerController: ObservableObject {
     private struct PendingImport {
+        enum Kind {
+            case book
+            case customFont
+        }
+
         enum Source {
             case upload(UUID)
             case manual
@@ -37,6 +42,7 @@ final class UploadServerController: ObservableObject {
 
         let sourceURL: URL
         let filename: String
+        let kind: Kind
         let source: Source
         let existingBookStrategy: BookImportService.ExistingBookStrategy
     }
@@ -151,11 +157,16 @@ final class UploadServerController: ObservableObject {
         }
         server.onUploadFinished = { [weak self] uploadID, fileURL, filename in
             Task { @MainActor in
-                self?.setPhase(.importing, forUploadID: uploadID)
-                self?.enqueueImports(
+                guard let self else {
+                    return
+                }
+
+                self.setPhase(.importing, forUploadID: uploadID)
+                self.enqueueImports(
                     [PendingImport(
                         sourceURL: fileURL,
                         filename: filename,
+                        kind: self.pendingImportKind(for: filename),
                         source: .upload(uploadID),
                         existingBookStrategy: .skip
                     )],
@@ -227,6 +238,7 @@ final class UploadServerController: ObservableObject {
             PendingImport(
                 sourceURL: $0,
                 filename: AppStorage.sanitizedFilename($0.lastPathComponent),
+                kind: .book,
                 source: .manual,
                 existingBookStrategy: .skip
             )
@@ -244,7 +256,7 @@ final class UploadServerController: ObservableObject {
         guard totalImportCount > 0, isImportingBooks else {
             return nil
         }
-        return "Book \(min(completedImportCount + 1, totalImportCount)) of \(totalImportCount)"
+        return "File \(min(completedImportCount + 1, totalImportCount)) of \(totalImportCount)"
     }
 
     private func enqueueImports(_ imports: [PendingImport], modelContext: ModelContext) {
@@ -294,14 +306,23 @@ final class UploadServerController: ObservableObject {
             importStatus = "Preparing import..."
 
             do {
-                _ = try await BookImportService.importBook(
-                    from: pendingImport.sourceURL,
-                    modelContext: modelContext,
-                    existingBookStrategy: pendingImport.existingBookStrategy
-                ) { [weak self] progress in
-                    guard let self else { return }
-                    self.importProgress = self.overallImportProgress(for: progress.fractionCompleted)
-                    self.importStatus = progress.message
+                switch pendingImport.kind {
+                case .book:
+                    _ = try await BookImportService.importBook(
+                        from: pendingImport.sourceURL,
+                        modelContext: modelContext,
+                        existingBookStrategy: pendingImport.existingBookStrategy
+                    ) { [weak self] progress in
+                        guard let self else { return }
+                        self.importProgress = self.overallImportProgress(for: progress.fractionCompleted)
+                        self.importStatus = progress.message
+                    }
+
+                case .customFont:
+                    importStatus = "Importing font..."
+                    _ = try CustomFontStore.importFonts(from: [pendingImport.sourceURL])
+                    importProgress = overallImportProgress(for: 1)
+                    importStatus = "Import complete"
                 }
 
                 if case .upload(let uploadID) = pendingImport.source {
@@ -476,6 +497,16 @@ final class UploadServerController: ObservableObject {
             .deletingPathExtension()
             .lastPathComponent
             .replacingOccurrences(of: "_", with: " ")
+    }
+
+    private func pendingImportKind(for filename: String) -> PendingImport.Kind {
+        let pathExtension = URL(fileURLWithPath: filename).pathExtension.lowercased()
+        switch pathExtension {
+        case "ttf", "otf":
+            return .customFont
+        default:
+            return .book
+        }
     }
 
     private static func localIPAddress() -> String? {

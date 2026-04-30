@@ -33,7 +33,7 @@ nonisolated enum ReaderSettings {
     static let playbackSpeedStep = 0.1
     static let playbackJumpIntervalOptions = [15.0, 30.0, 45.0, 60.0]
 
-    static let fontFamilyOptions: [FontFamilyOption] = [
+    static let builtInFontFamilyOptions: [FontFamilyOption] = [
         FontFamilyOption(name: "Default", value: nil),
         FontFamilyOption(name: "Serif", value: .serif),
         FontFamilyOption(name: "Sans Serif", value: .sansSerif),
@@ -46,6 +46,12 @@ nonisolated enum ReaderSettings {
         FontFamilyOption(name: "Seravek", value: .seravek),
         FontFamilyOption(name: "Arial", value: .arial),
     ]
+
+    static func fontFamilyOptions(customFontFamilies: [CustomFontStore.ImportedFontFamily]) -> [FontFamilyOption] {
+        builtInFontFamilyOptions + customFontFamilies.map {
+            FontFamilyOption(name: $0.displayName, value: FontFamily(rawValue: $0.fontFamily))
+        }
+    }
 
     static func fontFamily(from rawValue: String) -> FontFamily? {
         guard !rawValue.isEmpty else {

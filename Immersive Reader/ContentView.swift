@@ -446,7 +446,7 @@ private struct UploadView: View {
                                 .textSelection(.enabled)
                         }
                     } else if case .running = controller.status {
-                        Text("Server is running, but no Wi-Fi IP address was found. Make sure this device is connected to the same network as the computer uploading the EPUB.")
+                        Text("Server is running, but no Wi-Fi IP address was found. Make sure this device is connected to the same network as the computer uploading EPUB or font files.")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
@@ -473,7 +473,7 @@ private struct UploadView: View {
                 }
 
                 Section("Storage") {
-                    Text("Uploaded EPUBs are stored directly in the app's Documents folder and should appear in Files under On My iPhone/ImmersiveReader.")
+                    Text("Uploaded EPUBs are stored directly in the app's Documents folder and should appear in Files under On My iPhone/ImmersiveReader. Uploaded .ttf and .otf files are imported into Reader > Custom Fonts.")
                 }
 
                 if !controller.activeUploads.isEmpty {
@@ -605,6 +605,7 @@ private struct SettingsView: View {
     @SwiftUI.AppStorage(ReaderSettings.readAloudColorKey) private var readAloudColorRawValue = ReaderSettings.defaultReadAloudColorHex
     @SwiftUI.AppStorage(ReaderSettings.playbackSpeedKey) private var playbackSpeed = ReaderSettings.defaultPlaybackSpeed
     @SwiftUI.AppStorage(ReaderSettings.playbackJumpIntervalKey) private var playbackJumpInterval = ReaderSettings.defaultPlaybackJumpInterval
+    @State private var customFontFamilies: [CustomFontStore.ImportedFontFamily] = []
 
     private var playbackJumpIntervalSliderValue: Binding<Double> {
         Binding(
@@ -691,8 +692,22 @@ private struct SettingsView: View {
                     }
 
                     Picker("Font Family", selection: $fontFamilyRawValue) {
-                        ForEach(ReaderSettings.fontFamilyOptions) { option in
+                        ForEach(ReaderSettings.fontFamilyOptions(customFontFamilies: customFontFamilies)) { option in
                             Text(option.name).tag(option.id)
+                        }
+                    }
+
+                    NavigationLink {
+                        CustomFontsView(onFontsChanged: loadCustomFonts)
+                            .toolbar(.hidden, for: .tabBar)
+                    } label: {
+                        HStack {
+                            Text("Custom Fonts")
+
+                            Spacer()
+
+                            Text(customFontStatusText)
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -732,7 +747,16 @@ private struct SettingsView: View {
                 }
 
             }
+            .onAppear(perform: loadCustomFonts)
         }
+    }
+
+    private var customFontStatusText: String {
+        guard !customFontFamilies.isEmpty else {
+            return "None"
+        }
+
+        return customFontFamilies.count == 1 ? "1 family" : "\(customFontFamilies.count) families"
     }
 
     private func playbackJumpIntervalIndex(for value: Double) -> Int {
@@ -742,6 +766,177 @@ private struct SettingsView: View {
     private func playbackJumpIntervalValue(for index: Int) -> Double {
         let clampedIndex = min(max(index, 0), ReaderSettings.playbackJumpIntervalOptions.count - 1)
         return ReaderSettings.playbackJumpIntervalOptions[clampedIndex]
+    }
+
+    private func loadCustomFonts() {
+        customFontFamilies = CustomFontStore.allFamilies()
+    }
+}
+
+private struct CustomFontsView: View {
+    let onFontsChanged: () -> Void
+
+    @State private var importedFamilies: [CustomFontStore.ImportedFontFamily] = []
+    @State private var expandedFamilyIDs: Set<UUID> = []
+    @State private var isImporting = false
+    @State private var errorMessage: String?
+    @State private var familyPendingDeletion: CustomFontStore.ImportedFontFamily?
+
+    var body: some View {
+        Form {
+            Section {
+                Button {
+                    isImporting = true
+                } label: {
+                    Label("Add Fonts", systemImage: "plus")
+                }
+            } footer: {
+                Text("Imported fonts appear in Reader > Font Family. Reopen the current book after adding a font to use it in the reader.")
+            }
+
+            if importedFamilies.isEmpty {
+                Section {
+                    Text("No custom fonts imported yet.")
+                        .foregroundStyle(.secondary)
+                } header: {
+                    Text("Imported Font Families")
+                }
+            } else {
+                ForEach(importedFamilies) { family in
+                    Section {
+                        DisclosureGroup(isExpanded: expansionBinding(for: family.id)) {
+                            ForEach(family.files) { file in
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(file.originalFilename)
+                                        Text(file.style.label)
+                                            .font(.footnote)
+                                            .foregroundStyle(.secondary)
+                                    }
+
+                                    Spacer(minLength: 0)
+                                }
+                                .contentShape(Rectangle())
+                                .swipeActions {
+                                    Button("Delete File", role: .destructive) {
+                                        removeFiles(withIDs: [file.id])
+                                    }
+                                }
+                            }
+                        } label: {
+                            HStack {
+                                Text(family.displayName)
+
+                                Spacer()
+
+                                Text(family.fileCount == 1 ? "1 file" : "\(family.fileCount) files")
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .swipeActions {
+                            Button("Delete Family", role: .destructive) {
+                                familyPendingDeletion = family
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .navigationTitle("Custom Fonts")
+        .navigationBarTitleDisplayMode(.inline)
+        .fileImporter(
+            isPresented: $isImporting,
+            allowedContentTypes: [.ttf, .otf],
+            allowsMultipleSelection: true,
+            onCompletion: handleImport
+        )
+        .alert(
+            "Font Import Failed",
+            isPresented: Binding(
+                get: { errorMessage != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        errorMessage = nil
+                    }
+                }
+            )
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(errorMessage ?? "Unknown error")
+        }
+        .alert(
+            "Delete Font Family?",
+            isPresented: Binding(
+                get: { familyPendingDeletion != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        familyPendingDeletion = nil
+                    }
+                }
+            ),
+            presenting: familyPendingDeletion
+        ) { family in
+            Button("Delete", role: .destructive) {
+                removeFamilies(withIDs: [family.id])
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { family in
+            Text("Delete \(family.displayName) and all of its imported font files?")
+        }
+        .onAppear(perform: reloadFonts)
+    }
+
+    private func handleImport(_ result: Result<[URL], Error>) {
+        do {
+            let urls = try result.get()
+            try CustomFontStore.importFonts(from: urls)
+            reloadFonts()
+            onFontsChanged()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func removeFamilies(withIDs ids: [UUID]) {
+        do {
+            try CustomFontStore.removeFamilies(withIDs: ids)
+            familyPendingDeletion = nil
+            reloadFonts()
+            onFontsChanged()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func removeFiles(withIDs ids: [UUID]) {
+        do {
+            try CustomFontStore.removeFiles(withIDs: ids)
+            reloadFonts()
+            onFontsChanged()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func reloadFonts() {
+        importedFamilies = CustomFontStore.allFamilies()
+        expandedFamilyIDs.formIntersection(Set(importedFamilies.map(\.id)))
+    }
+
+    private func expansionBinding(for familyID: UUID) -> Binding<Bool> {
+        Binding(
+            get: { expandedFamilyIDs.contains(familyID) },
+            set: { isExpanded in
+                if isExpanded {
+                    expandedFamilyIDs.insert(familyID)
+                } else {
+                    expandedFamilyIDs.remove(familyID)
+                }
+            }
+        )
     }
 }
 
@@ -993,6 +1188,8 @@ private struct ReadAloudHueSlider: View {
 
 private extension UTType {
     static let epub = UTType(filenameExtension: "epub") ?? .data
+    static let ttf = UTType(filenameExtension: "ttf") ?? .data
+    static let otf = UTType(filenameExtension: "otf") ?? .data
 }
 
 #Preview {

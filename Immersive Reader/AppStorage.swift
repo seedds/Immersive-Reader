@@ -39,6 +39,14 @@ enum AppStorage {
         try ensureDirectory(applicationSupportDirectory().appendingPathComponent("Extracted", isDirectory: true))
     }
 
+    nonisolated static func customFontsDirectory() throws -> URL {
+        try ensureDirectory(applicationSupportDirectory().appendingPathComponent("CustomFonts", isDirectory: true))
+    }
+
+    nonisolated static func customFontsMetadataURL() throws -> URL {
+        try applicationSupportDirectory().appendingPathComponent("custom-fonts.json", isDirectory: false)
+    }
+
     nonisolated static func bookFileURL(named filename: String) throws -> URL {
         try documentsDirectory().appendingPathComponent(sanitizedFilename(filename), isDirectory: false)
     }
