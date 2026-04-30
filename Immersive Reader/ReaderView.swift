@@ -34,6 +34,8 @@ struct ReaderView: View {
     @State private var isPlaybackSpeedControlPresented = false
     @State private var isReaderSettingsControlPresented = false
     @State private var customFontFamilies: [CustomFontStore.ImportedFontFamily] = []
+    @State private var layoutPreferenceTransitionID = 0
+    @State private var suppressedLocationPersistenceDepth = 0
 
     var body: some View {
         Group {
@@ -44,28 +46,26 @@ struct ReaderView: View {
 
             case .ready(_, let navigator):
                 ZStack(alignment: .trailing) {
-                    VStack(spacing: 0) {
-                        ZStack {
-                            EPUBNavigatorHost(
-                                navigator: navigator,
-                                onLocationDidChange: { locator in
-                                    handleLocationDidChange(locator, navigator: navigator)
-                                },
-                                onAudioTap: { reference in
-                                    Task {
-                                        await playFromTappedReference(reference, navigator: navigator)
-                                    }
+                    ZStack(alignment: .bottom) {
+                        EPUBNavigatorHost(
+                            navigator: navigator,
+                            onLocationDidChange: { locator in
+                                handleLocationDidChange(locator, navigator: navigator)
+                            },
+                            onAudioTap: { reference in
+                                Task {
+                                    await playFromTappedReference(reference, navigator: navigator)
                                 }
-                            )
-                            .ignoresSafeArea(edges: .bottom)
-
-                            if isBottomControlPresented {
-                                Color.black.opacity(0.001)
-                                    .contentShape(Rectangle())
-                                    .onTapGesture {
-                                        dismissBottomControls()
-                                    }
                             }
+                        )
+                        .ignoresSafeArea(edges: .bottom)
+
+                        if isBottomControlPresented {
+                            Color.black.opacity(0.001)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    dismissBottomControls()
+                                }
                         }
 
                         if !playback.clips.isEmpty {
@@ -153,13 +153,19 @@ struct ReaderView: View {
                     }
                 }
                 .onChange(of: readerFontSize) { _, _ in
-                    applyReaderPreferences(to: navigator)
+                    Task {
+                        await applyReaderPreferencesPreservingViewportAnchor(to: navigator)
+                    }
                 }
                 .onChange(of: readerLineHeight) { _, _ in
-                    applyReaderPreferences(to: navigator)
+                    Task {
+                        await applyReaderPreferencesPreservingViewportAnchor(to: navigator)
+                    }
                 }
                 .onChange(of: readerFontFamilyRawValue) { _, _ in
-                    applyReaderPreferences(to: navigator)
+                    Task {
+                        await applyReaderPreferencesPreservingViewportAnchor(to: navigator)
+                    }
                 }
                 .onChange(of: readerThemeRawValue) { _, _ in
                     applyReaderPreferences(to: navigator)
@@ -313,6 +319,49 @@ struct ReaderView: View {
         navigator.submitPreferences(readerPreferences())
     }
 
+    @MainActor
+    private func applyReaderPreferencesPreservingViewportAnchor(to navigator: EPUBNavigatorViewController) async {
+        layoutPreferenceTransitionID += 1
+        let transitionID = layoutPreferenceTransitionID
+
+        // Coalesce rapid slider and font taps so only the latest reflow runs.
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        guard transitionID == layoutPreferenceTransitionID else {
+            return
+        }
+
+        let anchor = await currentViewportAnchor(with: navigator) ?? currentLocationReference
+        beginSuppressingLocationPersistence()
+        defer { endSuppressingLocationPersistence() }
+
+        navigator.submitPreferences(readerPreferences())
+
+        // Give Readium a brief moment to finish the internal reflow before restoring.
+        try? await Task.sleep(nanoseconds: 80_000_000)
+        guard transitionID == layoutPreferenceTransitionID,
+              let anchor
+        else {
+            return
+        }
+
+        await restoreViewportAnchor(anchor, with: navigator)
+        try? await Task.sleep(nanoseconds: 80_000_000)
+    }
+
+    @MainActor
+    private func beginSuppressingLocationPersistence() {
+        suppressedLocationPersistenceDepth += 1
+    }
+
+    @MainActor
+    private func endSuppressingLocationPersistence() {
+        suppressedLocationPersistenceDepth = max(0, suppressedLocationPersistenceDepth - 1)
+    }
+
+    private var isSuppressingLocationPersistence: Bool {
+        suppressedLocationPersistenceDepth > 0
+    }
+
     private var isBottomControlPresented: Bool {
         isPlaybackSpeedControlPresented || isReaderSettingsControlPresented
     }
@@ -419,6 +468,10 @@ struct ReaderView: View {
     @MainActor
     private func handleLocationDidChange(_ locator: Locator, navigator: EPUBNavigatorViewController) {
         currentLocationReference = normalizedReference(for: locator.href.string)
+        guard !isSuppressingLocationPersistence else {
+            return
+        }
+
         saveLocation(locator)
     }
 
@@ -631,6 +684,20 @@ struct ReaderView: View {
         )
     }
 
+    private func locator(for reference: EPUBReference) -> Locator? {
+        guard let href = RelativeURL(epubHREF: reference.resourceHref) else {
+            return nil
+        }
+
+        return Locator(
+            href: href,
+            mediaType: .xhtml,
+            locations: Locator.Locations(
+                fragments: reference.fragmentID.map { [$0] } ?? []
+            )
+        )
+    }
+
     @MainActor
     private func isCurrentClipResourceVisible(with navigator: EPUBNavigatorViewController, clip: EPUBMediaOverlayClip) async -> Bool {
         guard let visibleLocator = await navigator.firstVisibleElementLocator() else {
@@ -680,13 +747,13 @@ struct ReaderView: View {
             }
           }
 
-          const startOutOfScreen = startRect.top < 0 || startRect.top > viewportHeight;
-          const endOutOfScreen = endBoundaryPosition < 0 || endBoundaryPosition > viewportHeight;
-          if (!startOutOfScreen && !endOutOfScreen) {
+          const targetTop = viewportHeight * 0.05;
+          const startPastVisibleTop = startRect.top < targetTop;
+          const endPastVisibleBottom = endBoundaryPosition > viewportHeight * 0.95;
+          if (!startPastVisibleTop && !endPastVisibleBottom) {
             return 'noop';
           }
 
-          const targetTop = viewportHeight * 0.05;
           const delta = startRect.top - targetTop;
           if (Math.abs(delta) <= 2) {
             return 'noop';
@@ -728,6 +795,119 @@ struct ReaderView: View {
         }
 
         return nil
+    }
+
+    @MainActor
+    private func currentViewportAnchor(with navigator: EPUBNavigatorViewController) async -> EPUBReference? {
+        let script = """
+        (() => {
+          const href = window.location.pathname.replace(/^\\//, '');
+          if (!href) {
+            return null;
+          }
+
+          const sampleRatios = [0.08, 0.12, 0.18, 0.24, 0.32];
+          const centerX = Math.min(Math.max(window.innerWidth * 0.5, 1), Math.max(window.innerWidth - 1, 1));
+
+          const nearestIdentifiedElement = element => {
+            let node = element;
+            while (node) {
+              if (node.id) {
+                return node;
+              }
+              node = node.parentElement;
+            }
+            return null;
+          };
+
+          for (const ratio of sampleRatios) {
+            const y = Math.min(Math.max(window.innerHeight * ratio, 1), Math.max(window.innerHeight - 1, 1));
+            const element = nearestIdentifiedElement(document.elementFromPoint(centerX, y));
+            if (element) {
+              return { href, fragmentID: element.id };
+            }
+          }
+
+          const candidates = Array.from(document.querySelectorAll('[id]'));
+          let firstVisible = null;
+          for (const element of candidates) {
+            const style = window.getComputedStyle(element);
+            if (style.display === 'none' || style.visibility === 'hidden') {
+              continue;
+            }
+
+            const rect = element.getBoundingClientRect();
+            if (!(rect.bottom > 0 && rect.top < window.innerHeight)) {
+              continue;
+            }
+
+            if (!firstVisible || rect.top < firstVisible.top) {
+              firstVisible = { top: rect.top, fragmentID: element.id };
+            }
+          }
+
+          return firstVisible ? { href, fragmentID: firstVisible.fragmentID } : { href, fragmentID: null };
+        })();
+        """
+
+        let result = await navigator.evaluateJavaScript(script)
+        guard case .success(let value) = result,
+              let payload = value as? [String: Any],
+              let href = payload["href"] as? String
+        else {
+            return nil
+        }
+
+        let fragmentID = (payload["fragmentID"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        return EPUBReference(resourceHref: normalizedResourceHref(for: href), fragmentID: fragmentID)
+    }
+
+    @MainActor
+    private func restoreViewportAnchor(_ anchor: EPUBReference, with navigator: EPUBNavigatorViewController) async {
+        if let fragmentID = anchor.fragmentID,
+           await scrollFragmentIntoPreferredPosition(fragmentID, with: navigator) {
+            return
+        }
+
+        guard let locator = locator(for: anchor) else {
+            return
+        }
+
+        _ = await navigator.go(to: locator, options: .animated)
+    }
+
+    @MainActor
+    private func scrollFragmentIntoPreferredPosition(_ fragmentID: String, with navigator: EPUBNavigatorViewController) async -> Bool {
+        let fragmentIDLiteral = javaScriptStringLiteral(fragmentID)
+        let script = """
+        (() => {
+          const element = document.getElementById(
+            \(fragmentIDLiteral)
+          );
+          if (!element) {
+            return false;
+          }
+
+          const style = window.getComputedStyle(element);
+          if (style.display === 'none' || style.visibility === 'hidden') {
+            return false;
+          }
+
+          const targetTop = window.innerHeight * 0.08;
+          const rect = element.getBoundingClientRect();
+          window.scrollTo({ top: window.scrollY + rect.top - targetTop, behavior: 'auto' });
+          return true;
+        })();
+        """
+
+        let result = await navigator.evaluateJavaScript(script)
+        guard case .success(let value) = result,
+              let didScroll = value as? Bool
+        else {
+            return false
+        }
+
+        return didScroll
     }
 
     private func playableFragmentIDs(for resourceHref: String) -> [String] {
@@ -1225,7 +1405,7 @@ private struct ReaderTypographyControlPanel: View {
         ReaderControlPanel {
             switch panelMode {
             case .typography:
-                VStack(spacing: 14) {
+                VStack(spacing: 10) {
                     ReaderSettingSliderRow(
                         title: "Font Size",
                         valueText: ReaderSettings.fontSizeText(fontSize),
@@ -1287,7 +1467,7 @@ private struct ReaderTypographyControlPanel: View {
                             FontFamilySelectionList(
                                 customFontFamilies: customFontFamilies,
                                 selectedFontFamilyRawValue: $fontFamilyRawValue,
-                                onSelect: { panelMode = .typography },
+                                onSelect: nil,
                                 showsSeparators: true
                             )
                         }

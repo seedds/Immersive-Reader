@@ -337,7 +337,7 @@ struct ReaderSettingSliderRow: View {
     let step: Double
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(title)
                     .font(.subheadline.weight(.semibold))
