@@ -41,7 +41,7 @@ nonisolated enum ReaderSettings {
         FontFamilyOption(name: "Iowan Old Style", value: .iowanOldStyle),
         FontFamilyOption(name: "Palatino", value: .palatino),
         FontFamilyOption(name: "Georgia", value: .georgia),
-        FontFamilyOption(name: "Literata", value: .literata),
+        FontFamilyOption(name: "Literata", value: "Literata"),
         FontFamilyOption(name: "Helvetica Neue", value: .helveticaNeue),
         FontFamilyOption(name: "Seravek", value: .seravek),
         FontFamilyOption(name: "Arial", value: .arial),
@@ -270,10 +270,6 @@ nonisolated enum ReaderSettings {
     private static func clamp(_ value: Double) -> Double {
         min(max(value, 0), 1)
     }
-}
-
-extension FontFamily {
-    static let literata: FontFamily = "Literata"
 }
 
 nonisolated struct ReadAloudColorHSB: Equatable {

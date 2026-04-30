@@ -39,6 +39,14 @@ enum AppStorage {
         try ensureDirectory(applicationSupportDirectory().appendingPathComponent("Extracted", isDirectory: true))
     }
 
+    nonisolated static func bookFileURL(named filename: String) throws -> URL {
+        try documentsDirectory().appendingPathComponent(sanitizedFilename(filename), isDirectory: false)
+    }
+
+    nonisolated static func extractedDirectory(for bookID: UUID) throws -> URL {
+        try extractedDirectory().appendingPathComponent(bookID.uuidString, isDirectory: true)
+    }
+
     nonisolated static func sanitizedFilename(_ filename: String) -> String {
         let fallback = "upload.epub"
         let basename = URL(fileURLWithPath: filename).lastPathComponent
@@ -65,6 +73,23 @@ enum AppStorage {
         }
 
         return candidate
+    }
+
+    nonisolated static func relativePath(from absolutePath: String, under directoryPath: String) -> String? {
+        guard absolutePath.hasPrefix("/"), directoryPath.hasPrefix("/") else {
+            return nil
+        }
+
+        let absoluteURL = URL(fileURLWithPath: absolutePath).standardizedFileURL
+        let directoryURL = URL(fileURLWithPath: directoryPath).standardizedFileURL
+        let absolute = absoluteURL.path
+        let directory = directoryURL.path
+
+        guard absolute != directory, absolute.hasPrefix(directory + "/") else {
+            return nil
+        }
+
+        return String(absolute.dropFirst(directory.count + 1))
     }
 
     nonisolated private static func ensureDirectory(_ url: URL) throws -> URL {

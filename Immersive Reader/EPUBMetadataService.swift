@@ -162,7 +162,10 @@ enum EPUBMetadataService {
         }
 
         let packageDirectory = package.packageURL.deletingLastPathComponent()
-        return resolvedURL(for: href, relativeTo: packageDirectory, root: extractedDirectory)?.path
+        guard let coverURL = resolvedURL(for: href, relativeTo: packageDirectory, root: extractedDirectory) else {
+            return nil
+        }
+        return AppStorage.relativePath(from: coverURL.path, under: extractedDirectory.path)
     }
 
     nonisolated private static func clean(_ value: String?) -> String? {

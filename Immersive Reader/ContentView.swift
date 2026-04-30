@@ -152,8 +152,12 @@ private struct BooksView: View {
 
         for index in offsets {
             let book = books[index]
-            try? fileManager.removeItem(atPath: book.epubFilePath)
-            try? fileManager.removeItem(atPath: book.extractedDirectoryPath)
+            if let epubURL = try? book.resolvedEPUBFileURL() {
+                try? fileManager.removeItem(at: epubURL)
+            }
+            if let extractedURL = try? book.resolvedExtractedDirectoryURL() {
+                try? fileManager.removeItem(at: extractedURL)
+            }
             modelContext.delete(book)
         }
 
@@ -401,10 +405,10 @@ private struct BookCoverView: View {
     }
 
     private var coverImage: UIImage? {
-        guard let coverImagePath = book.coverImagePath else {
+        guard let coverImageURL = try? book.resolvedCoverImageURL() else {
             return nil
         }
-        return UIImage(contentsOfFile: coverImagePath)
+        return UIImage(contentsOfFile: coverImageURL.path)
     }
 }
 

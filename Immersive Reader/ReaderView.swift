@@ -223,7 +223,7 @@ struct ReaderView: View {
         try? modelContext.save()
         playback.setPlaybackRate(readerPlaybackSpeed)
         playback.setJumpInterval(readerPlaybackJumpInterval)
-        playback.load(from: book.mediaOverlayJSONPath)
+        playback.load(from: try? book.resolvedMediaOverlayJSONURL()?.path)
 
         do {
             let publication = try await ReadiumBookService.shared.openPublication(for: book)
@@ -270,7 +270,7 @@ struct ReaderView: View {
 
         return [
             CSSFontFamilyDeclaration(
-                fontFamily: .literata,
+                fontFamily: "Literata",
                 fontFaces: [
                     CSSFontFace(
                         file: regularFont,

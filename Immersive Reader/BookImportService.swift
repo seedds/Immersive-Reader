@@ -209,12 +209,12 @@ enum BookImportService {
                 existingBook.title = metadata.title ?? displayTitle(for: filename)
                 existingBook.author = metadata.author ?? "Unknown Author"
                 existingBook.originalFilename = filename
-                existingBook.epubFilePath = destinationURL.path
-                existingBook.extractedDirectoryPath = extractionURL.path
+                existingBook.epubFilePath = filename
+                existingBook.extractedDirectoryPath = bookId.uuidString
                 existingBook.coverImagePath = metadata.coverImagePath
                 existingBook.language = metadata.language
                 existingBook.metadataIdentifier = metadata.identifier
-                existingBook.mediaOverlayJSONPath = mediaOverlay?.jsonURL.path
+                existingBook.mediaOverlayJSONPath = relativePath(for: mediaOverlay?.jsonURL, under: extractionURL)
                 existingBook.mediaOverlayActiveClass = mediaOverlay?.manifest.activeClass
                 existingBook.mediaOverlayDuration = mediaOverlay?.manifest.duration
                 existingBook.mediaOverlayClipCount = mediaOverlay?.manifest.clipCount
@@ -228,12 +228,12 @@ enum BookImportService {
                     title: metadata.title ?? displayTitle(for: filename),
                     author: metadata.author ?? "Unknown Author",
                     originalFilename: filename,
-                    epubFilePath: destinationURL.path,
-                    extractedDirectoryPath: extractionURL.path,
+                    epubFilePath: filename,
+                    extractedDirectoryPath: bookId.uuidString,
                     coverImagePath: metadata.coverImagePath,
                     language: metadata.language,
                     metadataIdentifier: metadata.identifier,
-                    mediaOverlayJSONPath: mediaOverlay?.jsonURL.path,
+                    mediaOverlayJSONPath: relativePath(for: mediaOverlay?.jsonURL, under: extractionURL),
                     mediaOverlayActiveClass: mediaOverlay?.manifest.activeClass,
                     mediaOverlayDuration: mediaOverlay?.manifest.duration,
                     mediaOverlayClipCount: mediaOverlay?.manifest.clipCount,
@@ -288,12 +288,13 @@ enum BookImportService {
 
         let existingBooks = try modelContext.fetch(FetchDescriptor<Book>())
         let snapshots = existingBooks.map { book in
-            ExistingBookSnapshot(
+            let normalizedPaths = book.normalizedStoragePaths
+            return ExistingBookSnapshot(
                 id: book.id,
                 originalFilename: book.originalFilename,
-                epubFilePath: book.epubFilePath,
-                extractedDirectoryPath: book.extractedDirectoryPath,
-                mediaOverlayJSONPath: book.mediaOverlayJSONPath,
+                epubFilePath: normalizedPaths.epubFilePath,
+                extractedDirectoryPath: normalizedPaths.extractedDirectoryPath,
+                mediaOverlayJSONPath: normalizedPaths.mediaOverlayJSONPath,
                 sourceFileSize: book.sourceFileSize,
                 sourceFileModifiedAt: book.sourceFileModifiedAt
             )
@@ -319,8 +320,12 @@ enum BookImportService {
                 continue
             }
 
-            try? fileManager.removeItem(atPath: book.epubFilePath)
-            try? fileManager.removeItem(atPath: book.extractedDirectoryPath)
+            if let epubURL = try? book.resolvedEPUBFileURL() {
+                try? fileManager.removeItem(at: epubURL)
+            }
+            if let extractedURL = try? book.resolvedExtractedDirectoryURL() {
+                try? fileManager.removeItem(at: extractedURL)
+            }
             modelContext.delete(book)
 
             completedApplyOperations += 1
@@ -545,10 +550,10 @@ enum BookImportService {
             return PreparedBookImport(
                 id: bookID,
                 filename: filename,
-                epubFilePath: destinationURL.path,
-                extractedDirectoryPath: extractionURL.path,
+                epubFilePath: filename,
+                extractedDirectoryPath: bookID.uuidString,
                 metadata: metadata,
-                mediaOverlayJSONPath: mediaOverlay?.jsonURL.path,
+                mediaOverlayJSONPath: relativePath(for: mediaOverlay?.jsonURL, under: extractionURL),
                 mediaOverlayActiveClass: mediaOverlay?.manifest.activeClass,
                 mediaOverlayDuration: mediaOverlay?.manifest.duration,
                 mediaOverlayClipCount: mediaOverlay?.manifest.clipCount,
@@ -657,10 +662,10 @@ enum BookImportService {
             preparedImports.append(PreparedBookImport(
                 id: bookID,
                 filename: filename,
-                epubFilePath: sourceURL.path,
-                extractedDirectoryPath: extractionURL.path,
+                epubFilePath: filename,
+                extractedDirectoryPath: bookID.uuidString,
                 metadata: metadata,
-                mediaOverlayJSONPath: mediaOverlay?.jsonURL.path,
+                mediaOverlayJSONPath: relativePath(for: mediaOverlay?.jsonURL, under: extractionURL),
                 mediaOverlayActiveClass: mediaOverlay?.manifest.activeClass,
                 mediaOverlayDuration: mediaOverlay?.manifest.duration,
                 mediaOverlayClipCount: mediaOverlay?.manifest.clipCount,
@@ -726,11 +731,13 @@ enum BookImportService {
     ) -> Bool {
         let fileManager = FileManager.default
         let fileSizeMatches = fingerprint.fileSize == existingBook.sourceFileSize
-        let storedFilename = URL(fileURLWithPath: existingBook.epubFilePath).lastPathComponent
+        let storedFilename = AppStorage.sanitizedFilename(existingBook.originalFilename)
         let libraryFilename = libraryFileURL.lastPathComponent
         let filenameMatches = storedFilename == libraryFilename
-        let epubExists = fileManager.fileExists(atPath: existingBook.epubFilePath)
-        let extractedExists = fileManager.fileExists(atPath: existingBook.extractedDirectoryPath)
+        let epubExists = (try? AppStorage.bookFileURL(named: existingBook.originalFilename))
+            .map { fileManager.fileExists(atPath: $0.path) } ?? false
+        let extractedExists = (try? AppStorage.extractedDirectory(for: existingBook.id))
+            .map { fileManager.fileExists(atPath: $0.path) } ?? false
         guard fileSizeMatches,
               filenameMatches,
               epubExists,
@@ -740,7 +747,11 @@ enum BookImportService {
         }
 
         if let mediaOverlayJSONPath = existingBook.mediaOverlayJSONPath {
-            return fileManager.fileExists(atPath: mediaOverlayJSONPath)
+            guard let extractedDirectory = try? AppStorage.extractedDirectory(for: existingBook.id) else {
+                return false
+            }
+            let mediaOverlayURL = extractedDirectory.appendingPathComponent(mediaOverlayJSONPath, isDirectory: false)
+            return fileManager.fileExists(atPath: mediaOverlayURL.path)
         }
 
         return true
@@ -757,15 +768,23 @@ enum BookImportService {
 
     @MainActor
     private static func snapshot(for book: Book) -> ExistingBookSnapshot {
-        ExistingBookSnapshot(
+        let normalizedPaths = book.normalizedStoragePaths
+        return ExistingBookSnapshot(
             id: book.id,
             originalFilename: book.originalFilename,
-            epubFilePath: book.epubFilePath,
-            extractedDirectoryPath: book.extractedDirectoryPath,
-            mediaOverlayJSONPath: book.mediaOverlayJSONPath,
+            epubFilePath: normalizedPaths.epubFilePath,
+            extractedDirectoryPath: normalizedPaths.extractedDirectoryPath,
+            mediaOverlayJSONPath: normalizedPaths.mediaOverlayJSONPath,
             sourceFileSize: book.sourceFileSize,
             sourceFileModifiedAt: book.sourceFileModifiedAt
         )
+    }
+
+    nonisolated private static func relativePath(for url: URL?, under directory: URL) -> String? {
+        guard let url else {
+            return nil
+        }
+        return AppStorage.relativePath(from: url.path, under: directory.path)
     }
 
     nonisolated private static func shouldMoveUploadedSourceIntoLibrary(_ sourceURL: URL) -> Bool {

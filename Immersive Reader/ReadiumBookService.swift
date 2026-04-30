@@ -44,8 +44,15 @@ final class ReadiumBookService {
     private init() {}
 
     func openPublication(for book: Book, sender: Any? = nil) async throws -> Publication {
-        guard let fileURL = FileURL(path: book.epubFilePath, isDirectory: false) else {
+        let resolvedEPUBURL: URL
+        do {
+            resolvedEPUBURL = try book.resolvedEPUBFileURL()
+        } catch {
             throw ReadiumBookError.invalidFilePath(book.epubFilePath)
+        }
+
+        guard let fileURL = FileURL(path: resolvedEPUBURL.path, isDirectory: false) else {
+            throw ReadiumBookError.invalidFilePath(resolvedEPUBURL.path)
         }
 
         do {

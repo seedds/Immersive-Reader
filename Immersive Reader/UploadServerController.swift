@@ -395,7 +395,9 @@ final class UploadServerController: ObservableObject {
         let dateFormatter = ISO8601DateFormatter()
 
         let payload = books.map { book -> [String: Any] in
-            let attributes = try? fileManager.attributesOfItem(atPath: book.epubFilePath)
+            let attributes = (try? book.resolvedEPUBFileURL()).flatMap {
+                try? fileManager.attributesOfItem(atPath: $0.path)
+            }
             let fileSize = attributes?[.size] as? Int64 ?? 0
             return [
                 "id": book.id.uuidString,
@@ -422,7 +424,7 @@ final class UploadServerController: ObservableObject {
         let fileManager = FileManager.default
         let libraryDirectory = try AppStorage.documentsDirectory()
         let destinationURL = libraryDirectory.appendingPathComponent(filename, isDirectory: false)
-        let sourceURL = URL(fileURLWithPath: book.epubFilePath)
+        let sourceURL = try book.resolvedEPUBFileURL()
 
         if destinationURL.path != sourceURL.path, fileManager.fileExists(atPath: destinationURL.path) {
             throw LocalLibraryError.duplicateFilename(filename)
@@ -437,14 +439,18 @@ final class UploadServerController: ObservableObject {
         if book.title == previousDisplayTitle {
             book.title = displayTitle(for: filename)
         }
-        book.epubFilePath = destinationURL.path
+        book.epubFilePath = filename
         try modelContext.save()
     }
 
     private func deleteBook(id: UUID, modelContext: ModelContext) throws {
         let book = try findBook(id: id, modelContext: modelContext)
-        try? FileManager.default.removeItem(atPath: book.epubFilePath)
-        try? FileManager.default.removeItem(atPath: book.extractedDirectoryPath)
+        if let epubURL = try? book.resolvedEPUBFileURL() {
+            try? FileManager.default.removeItem(at: epubURL)
+        }
+        if let extractedURL = try? book.resolvedExtractedDirectoryURL() {
+            try? FileManager.default.removeItem(at: extractedURL)
+        }
         modelContext.delete(book)
         try modelContext.save()
     }

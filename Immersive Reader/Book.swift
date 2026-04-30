@@ -8,6 +8,13 @@
 import Foundation
 import SwiftData
 
+struct NormalizedBookStoragePaths: Equatable {
+    let epubFilePath: String
+    let extractedDirectoryPath: String
+    let coverImagePath: String?
+    let mediaOverlayJSONPath: String?
+}
+
 @Model
 final class Book {
     var id: UUID
@@ -79,5 +86,58 @@ final class Book {
         self.sourceFileModifiedAt = sourceFileModifiedAt
         self.importedAt = importedAt
         self.lastOpenedAt = lastOpenedAt
+    }
+}
+
+extension Book {
+    nonisolated var normalizedStoragePaths: NormalizedBookStoragePaths {
+        let normalizedEPUBPath = AppStorage.sanitizedFilename(
+            originalFilename.isEmpty ? URL(fileURLWithPath: epubFilePath).lastPathComponent : originalFilename
+        )
+        let normalizedExtractedDirectoryPath = id.uuidString
+
+        return NormalizedBookStoragePaths(
+            epubFilePath: normalizedEPUBPath,
+            extractedDirectoryPath: normalizedExtractedDirectoryPath,
+            coverImagePath: normalizedExtractedSubpath(for: coverImagePath),
+            mediaOverlayJSONPath: normalizedExtractedSubpath(for: mediaOverlayJSONPath)
+        )
+    }
+
+    nonisolated func resolvedEPUBFileURL() throws -> URL {
+        try AppStorage.bookFileURL(named: normalizedStoragePaths.epubFilePath)
+    }
+
+    nonisolated func resolvedExtractedDirectoryURL() throws -> URL {
+        try AppStorage.extractedDirectory(for: id)
+    }
+
+    nonisolated func resolvedCoverImageURL() throws -> URL? {
+        guard let relativePath = normalizedStoragePaths.coverImagePath else {
+            return nil
+        }
+        return try resolvedExtractedDirectoryURL().appendingPathComponent(relativePath, isDirectory: false)
+    }
+
+    nonisolated func resolvedMediaOverlayJSONURL() throws -> URL? {
+        guard let relativePath = normalizedStoragePaths.mediaOverlayJSONPath else {
+            return nil
+        }
+        return try resolvedExtractedDirectoryURL().appendingPathComponent(relativePath, isDirectory: false)
+    }
+
+    nonisolated private func normalizedExtractedSubpath(for path: String?) -> String? {
+        guard let path, !path.isEmpty else {
+            return nil
+        }
+
+        if path.hasPrefix("/") {
+            if let relativePath = AppStorage.relativePath(from: path, under: extractedDirectoryPath) {
+                return relativePath
+            }
+            return URL(fileURLWithPath: path).lastPathComponent
+        }
+
+        return path
     }
 }
