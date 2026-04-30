@@ -107,9 +107,12 @@ enum EPUBMediaOverlayService {
 
     nonisolated private static func parse(in extractedDirectory: URL, package: EPUBPackageInfo) -> EPUBMediaOverlayManifest? {
         let packageDirectory = package.packageURL.deletingLastPathComponent()
-        let smilItemsById = Dictionary(uniqueKeysWithValues: package.manifestItems.compactMap { item in
-            isSMIL(item) ? (item.id, item) : nil
-        })
+        var smilItemsById: [String: EPUBPackageInfo.ManifestItem] = [:]
+        for item in package.manifestItems where isSMIL(item) {
+            if smilItemsById[item.id] == nil {
+                smilItemsById[item.id] = item
+            }
+        }
 
         var candidates: [(contentItem: EPUBPackageInfo.ManifestItem?, smilItem: EPUBPackageInfo.ManifestItem)] = []
 

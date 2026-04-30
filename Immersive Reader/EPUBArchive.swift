@@ -15,6 +15,7 @@ enum EPUBArchiveError: LocalizedError {
     case unsupportedZip64
     case unsafePath(String)
     case corruptEntry(String)
+    case writeFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -30,6 +31,8 @@ enum EPUBArchiveError: LocalizedError {
             "The EPUB contains an unsafe file path: \(path)."
         case .corruptEntry(let path):
             "The EPUB contains a corrupt ZIP entry: \(path)."
+        case .writeFailed(let path):
+            "Could not extract EPUB entry: \(path)."
         }
     }
 }
@@ -86,7 +89,9 @@ struct EPUBArchive {
 
             try fileManager.createDirectory(at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             let contents = try data(for: entry)
-            fileManager.createFile(atPath: outputURL.path, contents: contents)
+            guard fileManager.createFile(atPath: outputURL.path, contents: contents) else {
+                throw EPUBArchiveError.writeFailed(entry.path)
+            }
         }
     }
 
@@ -103,15 +108,24 @@ struct EPUBArchive {
         }
 
         let localOffset = Int(entry.localHeaderOffset)
-        guard data.uint32(at: localOffset) == 0x04034b50 else {
+        guard localOffset >= 0,
+              data.hasBytes(at: localOffset, count: 30),
+              data.uint32(at: localOffset) == 0x04034b50
+        else {
             throw EPUBArchiveError.corruptEntry(entry.path)
         }
 
-        let filenameLength = Int(data.uint16(at: localOffset + 26))
-        let extraLength = Int(data.uint16(at: localOffset + 28))
+        guard let filenameLength = data.uint16(at: localOffset + 26).map(Int.init),
+              let extraLength = data.uint16(at: localOffset + 28).map(Int.init)
+        else {
+            throw EPUBArchiveError.corruptEntry(entry.path)
+        }
+
         let payloadOffset = localOffset + 30 + filenameLength + extraLength
         let compressedSize = Int(entry.compressedSize)
-        guard payloadOffset >= 0, payloadOffset + compressedSize <= data.count else {
+        guard payloadOffset >= 0,
+              data.hasBytes(at: payloadOffset, count: compressedSize)
+        else {
             throw EPUBArchiveError.corruptEntry(entry.path)
         }
 
@@ -179,8 +193,11 @@ struct EPUBArchive {
             throw EPUBArchiveError.invalidArchive
         }
 
-        let totalEntries = Int(data.uint16(at: eocdOffset + 10))
-        let centralDirectoryOffset = data.uint32(at: eocdOffset + 16)
+        guard let totalEntries = data.uint16(at: eocdOffset + 10).map(Int.init),
+              let centralDirectoryOffset = data.uint32(at: eocdOffset + 16)
+        else {
+            throw EPUBArchiveError.invalidArchive
+        }
 
         if totalEntries == 0xffff || centralDirectoryOffset == 0xffffffff {
             throw EPUBArchiveError.unsupportedZip64
@@ -190,18 +207,23 @@ struct EPUBArchive {
         var entries: [Entry] = []
 
         for _ in 0..<totalEntries {
-            guard offset + 46 <= data.count, data.uint32(at: offset) == 0x02014b50 else {
+            guard data.hasBytes(at: offset, count: 46),
+                  data.uint32(at: offset) == 0x02014b50
+            else {
                 throw EPUBArchiveError.invalidArchive
             }
 
-            let flags = data.uint16(at: offset + 8)
-            let compressionMethod = data.uint16(at: offset + 10)
-            let compressedSize = data.uint32(at: offset + 20)
-            let uncompressedSize = data.uint32(at: offset + 24)
-            let filenameLength = Int(data.uint16(at: offset + 28))
-            let extraLength = Int(data.uint16(at: offset + 30))
-            let commentLength = Int(data.uint16(at: offset + 32))
-            let localHeaderOffset = data.uint32(at: offset + 42)
+            guard let flags = data.uint16(at: offset + 8),
+                  let compressionMethod = data.uint16(at: offset + 10),
+                  let compressedSize = data.uint32(at: offset + 20),
+                  let uncompressedSize = data.uint32(at: offset + 24),
+                  let filenameLength = data.uint16(at: offset + 28).map(Int.init),
+                  let extraLength = data.uint16(at: offset + 30).map(Int.init),
+                  let commentLength = data.uint16(at: offset + 32).map(Int.init),
+                  let localHeaderOffset = data.uint32(at: offset + 42)
+            else {
+                throw EPUBArchiveError.invalidArchive
+            }
 
             if compressedSize == 0xffffffff || uncompressedSize == 0xffffffff || localHeaderOffset == 0xffffffff {
                 throw EPUBArchiveError.unsupportedZip64
@@ -210,6 +232,7 @@ struct EPUBArchive {
             let filenameStart = offset + 46
             let filenameEnd = filenameStart + filenameLength
             guard filenameEnd <= data.count,
+                  data.hasBytes(at: filenameEnd, count: extraLength + commentLength),
                   let path = String(data: data.subdata(in: filenameStart..<filenameEnd), encoding: .utf8)
             else {
                 throw EPUBArchiveError.invalidArchive
@@ -248,12 +271,22 @@ struct EPUBArchive {
 }
 
 private extension Data {
-    nonisolated func uint16(at offset: Int) -> UInt16 {
-        UInt16(self[offset]) | (UInt16(self[offset + 1]) << 8)
+    nonisolated func hasBytes(at offset: Int, count: Int) -> Bool {
+        offset >= 0 && count >= 0 && offset <= self.count - count
     }
 
-    nonisolated func uint32(at offset: Int) -> UInt32 {
-        UInt32(self[offset]) |
+    nonisolated func uint16(at offset: Int) -> UInt16? {
+        guard hasBytes(at: offset, count: 2) else {
+            return nil
+        }
+        return UInt16(self[offset]) | (UInt16(self[offset + 1]) << 8)
+    }
+
+    nonisolated func uint32(at offset: Int) -> UInt32? {
+        guard hasBytes(at: offset, count: 4) else {
+            return nil
+        }
+        return UInt32(self[offset]) |
             (UInt32(self[offset + 1]) << 8) |
             (UInt32(self[offset + 2]) << 16) |
             (UInt32(self[offset + 3]) << 24)

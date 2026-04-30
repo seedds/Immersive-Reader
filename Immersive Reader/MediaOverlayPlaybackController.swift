@@ -524,7 +524,13 @@ final class MediaOverlayPlaybackController: ObservableObject {
                 queue: .main
             ) { [weak self] in
                 Task { @MainActor [weak self] in
-                    self?.nextClip(reason: "boundaryObserver transitionID=\(transitionID)")
+                    guard let self,
+                          self.currentTransitionID == transitionID,
+                          self.isCurrentClip(clip)
+                    else {
+                        return
+                    }
+                    self.nextClip(reason: "boundaryObserver transitionID=\(transitionID)")
                 }
             }
         }
@@ -536,7 +542,13 @@ final class MediaOverlayPlaybackController: ObservableObject {
                 queue: .main
             ) { [weak self] _ in
                 Task { @MainActor [weak self] in
-                    self?.nextClip(reason: "itemEndObserver transitionID=\(transitionID)")
+                    guard let self,
+                          self.currentTransitionID == transitionID,
+                          self.isCurrentClip(clip)
+                    else {
+                        return
+                    }
+                    self.nextClip(reason: "itemEndObserver transitionID=\(transitionID)")
                 }
             }
         }

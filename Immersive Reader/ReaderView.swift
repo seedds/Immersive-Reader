@@ -236,7 +236,8 @@ struct ReaderView: View {
                 config: .init(
                     preferences: preferences,
                     defaults: EPUBDefaults(scroll: true, spread: .never),
-                    disablePageTurnsWhileScrolling: true
+                    disablePageTurnsWhileScrolling: true,
+                    fontFamilyDeclarations: literataFontFamilyDeclarations()
                 )
             )
             navigator.submitPreferences(preferences)
@@ -258,6 +259,45 @@ struct ReaderView: View {
             scroll: true,
             theme: ReaderSettings.appTheme(from: readerThemeRawValue).readiumTheme(for: colorScheme)
         )
+    }
+
+    private func literataFontFamilyDeclarations() -> [AnyHTMLFontFamilyDeclaration] {
+        guard let regularFont = bundledFontURL(named: "Literata-VariableFont_opsz,wght.ttf"),
+              let italicFont = bundledFontURL(named: "Literata-Italic-VariableFont_opsz,wght.ttf")
+        else {
+            return []
+        }
+
+        return [
+            CSSFontFamilyDeclaration(
+                fontFamily: .literata,
+                fontFaces: [
+                    CSSFontFace(
+                        file: regularFont,
+                        style: .normal,
+                        weight: .variable(200 ... 900)
+                    ),
+                    CSSFontFace(
+                        file: italicFont,
+                        style: .italic,
+                        weight: .variable(200 ... 900)
+                    ),
+                ]
+            )
+            .eraseToAnyHTMLFontFamilyDeclaration(),
+        ]
+    }
+
+    private func bundledFontURL(named filename: String) -> FileURL? {
+        if let url = Bundle.main.url(forResource: filename, withExtension: nil, subdirectory: "Fonts"),
+           let fileURL = FileURL(url: url) {
+            return fileURL
+        }
+
+        guard let url = Bundle.main.url(forResource: filename, withExtension: nil) else {
+            return nil
+        }
+        return FileURL(url: url)
     }
 
     @MainActor
