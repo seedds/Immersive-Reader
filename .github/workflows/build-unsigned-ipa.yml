@@ -17,6 +17,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Cache Swift packages
         uses: actions/cache@v5
@@ -29,6 +31,49 @@ jobs:
       - name: Build unsigned IPA
         run: bash ./build_unsigned.sh
 
+      - name: Generate release notes
+        env:
+          CURRENT_TAG: ${{ env.APP_VERSION }}
+        run: |
+          previous_tag=""
+          while IFS= read -r tag; do
+            if [ "$tag" != "$CURRENT_TAG" ]; then
+              previous_tag="$tag"
+              break
+            fi
+          done < <(git for-each-ref --sort=-version:refname --format='%(refname:strip=2)' refs/tags)
+
+          commit_range="$GITHUB_SHA"
+          if [ -n "$previous_tag" ]; then
+            commit_range="$previous_tag..$GITHUB_SHA"
+          fi
+
+          {
+            printf '## Changelog\n'
+
+            has_commits=false
+            while IFS= read -r subject; do
+              if [ -z "$subject" ]; then
+                continue
+              fi
+
+              has_commits=true
+              printf -- '- %s\n' "$subject"
+            done < <(git log --format=%s "$commit_range")
+
+            if [ "$has_commits" = false ]; then
+              printf -- '- No user-facing changes recorded.\n'
+            fi
+
+            printf '\n## Details\n'
+            if [ -n "$previous_tag" ]; then
+              printf -- '- Compare: https://github.com/%s/compare/%s...%s\n' "$GITHUB_REPOSITORY" "$previous_tag" "$CURRENT_TAG"
+            else
+              printf -- '- Initial automated IPA release.\n'
+            fi
+            printf -- '- Commit: %s\n' "$GITHUB_SHA"
+          } > release-notes.md
+
       - name: Publish unsigned IPA release
         uses: softprops/action-gh-release@v2
         with:
@@ -36,6 +81,6 @@ jobs:
           name: ${{ env.APP_VERSION }}
           target_commitish: ${{ github.sha }}
           prerelease: true
-          generate_release_notes: true
+          body_path: release-notes.md
           files: export/ImmersiveReader-unsigned.ipa
           fail_on_unmatched_files: true
