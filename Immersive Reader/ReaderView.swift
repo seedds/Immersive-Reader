@@ -36,7 +36,9 @@ struct ReaderView: View {
     @State private var customFontFamilies: [CustomFontStore.ImportedFontFamily] = []
     @State private var layoutPreferenceTransitionID = 0
     @State private var suppressedLocationPersistenceDepth = 0
-    @State private var playbackBarHeight: CGFloat = 0
+    @State private var navigatorFrame: CGRect = .zero
+    @State private var playbackBarFrame: CGRect = .zero
+    @State private var lastHandledPlaybackStartClipKey: String?
 
     var body: some View {
         Group {
@@ -60,6 +62,12 @@ struct ReaderView: View {
                             }
                         )
                         .ignoresSafeArea(edges: .bottom)
+                        .background {
+                            GeometryReader { proxy in
+                                Color.clear
+                                    .preference(key: NavigatorFramePreferenceKey.self, value: proxy.frame(in: .global))
+                            }
+                        }
 
                         if isBottomControlPresented {
                             Color.black.opacity(0.001)
@@ -114,7 +122,7 @@ struct ReaderView: View {
                             .background {
                                 GeometryReader { proxy in
                                     Color.clear
-                                        .preference(key: PlaybackBarHeightPreferenceKey.self, value: proxy.size.height)
+                                        .preference(key: PlaybackBarFramePreferenceKey.self, value: proxy.frame(in: .global))
                                 }
                             }
                         }
@@ -151,12 +159,17 @@ struct ReaderView: View {
                     handleCurrentClipChange(oldIndex: oldIndex, newIndex: newIndex, navigator: navigator)
                 }
                 .onChange(of: playback.state) { oldValue, newValue in
+                    if oldValue.isPlaying && !newValue.isPlaying {
+                        lastHandledPlaybackStartClipKey = nil
+                        return
+                    }
+
                     guard !oldValue.isPlaying, newValue.isPlaying else {
                         return
                     }
 
                     Task {
-                        await ensureCurrentPlayingSegmentPosition(with: navigator)
+                        await handleClipPlaybackStartIfNeeded(with: navigator)
                     }
                 }
                 .onChange(of: readerFontSize) { _, _ in
@@ -191,7 +204,8 @@ struct ReaderView: View {
                         applyReaderPreferences(to: navigator)
                     }
                 }
-                .onPreferenceChange(PlaybackBarHeightPreferenceKey.self) { playbackBarHeight = $0 }
+                .onPreferenceChange(NavigatorFramePreferenceKey.self) { navigatorFrame = $0 }
+                .onPreferenceChange(PlaybackBarFramePreferenceKey.self) { playbackBarFrame = $0 }
 
             case .failed(let message):
                 ContentUnavailableView(
@@ -226,6 +240,7 @@ struct ReaderView: View {
             persistLastPlayedClip()
             isPlaybackSpeedControlPresented = false
             isReaderSettingsControlPresented = false
+            lastHandledPlaybackStartClipKey = nil
             playback.stop(reason: "readerView.onDisappear")
         }
     }
@@ -536,12 +551,18 @@ struct ReaderView: View {
     }
 
     @MainActor
-    private func ensureCurrentPlayingSegmentPosition(with navigator: EPUBNavigatorViewController) async {
+    private func handleClipPlaybackStartIfNeeded(with navigator: EPUBNavigatorViewController) async {
         guard playback.state.isPlaying,
               let currentClip = playback.currentClip
         else {
             return
         }
+
+        let clipKey = playbackStartClipKey(for: currentClip)
+        guard lastHandledPlaybackStartClipKey != clipKey else {
+            return
+        }
+        lastHandledPlaybackStartClipKey = clipKey
 
         if currentClip.fragmentID?.isEmpty != false {
             if !(await isCurrentClipResourceVisible(with: navigator, clip: currentClip)) {
@@ -554,7 +575,10 @@ struct ReaderView: View {
             await navigateToCurrentClip(with: navigator)
         }
 
-        _ = await repositionCurrentClipForPlaybackIfNeeded(with: navigator, obscuredBottomInset: playbackBarHeight)
+        _ = await repositionCurrentClipForPlaybackIfNeeded(
+            with: navigator,
+            visibleBottomFraction: navigatorVisibleBottomFraction
+        )
     }
 
     @MainActor
@@ -643,6 +667,41 @@ struct ReaderView: View {
         normalizedReference(for: href).resourceHref
     }
 
+    private var navigatorVisibleBottom: CGFloat {
+        guard !navigatorFrame.isNull,
+              !navigatorFrame.isEmpty
+        else {
+            return .greatestFiniteMagnitude
+        }
+
+        guard !playbackBarFrame.isNull,
+              !playbackBarFrame.isEmpty
+        else {
+            return navigatorFrame.height
+        }
+
+        let visibleBottom = playbackBarFrame.minY - navigatorFrame.minY
+        return min(max(visibleBottom, 0), navigatorFrame.height)
+    }
+
+    private var navigatorVisibleBottomFraction: CGFloat {
+        guard !navigatorFrame.isNull,
+              !navigatorFrame.isEmpty,
+              navigatorFrame.height > 0
+        else {
+            return 1
+        }
+
+        return min(max(navigatorVisibleBottom / navigatorFrame.height, 0), 1)
+    }
+
+    private func playbackStartClipKey(for clip: EPUBMediaOverlayClip) -> String {
+        let resourceHref = normalizedResourceHref(for: clip.textResourceHref)
+        let fragmentID = clip.fragmentID ?? ""
+        let clipEnd = clip.clipEnd.map { String($0) } ?? "nil"
+        return "\(resourceHref)|\(fragmentID)|\(clip.clipBegin)|\(clipEnd)"
+    }
+
     private var activeChapterItemID: ChapterListItem.ID? {
         guard let currentLocationReference else {
             return nil
@@ -673,7 +732,7 @@ struct ReaderView: View {
         if playback.state.isPlaying,
            oldIndex != newIndex {
             Task {
-                await ensureCurrentPlayingSegmentPosition(with: navigator)
+                await handleClipPlaybackStartIfNeeded(with: navigator)
             }
         }
     }
@@ -718,62 +777,124 @@ struct ReaderView: View {
     @MainActor
     private func repositionCurrentClipForPlaybackIfNeeded(
         with navigator: EPUBNavigatorViewController,
-        obscuredBottomInset: CGFloat
-    ) async -> String {
+        visibleBottomFraction: CGFloat
+    ) async {
         guard let currentClip = playback.currentClip,
               let fragmentID = currentClip.fragmentID,
               !fragmentID.isEmpty
         else {
-            return "missing"
+            return
         }
 
         let fragmentIDLiteral = javaScriptStringLiteral(fragmentID)
-        let obscuredBottomInsetLiteral = String(Double(max(0, obscuredBottomInset)))
+        let visibleBottomFractionLiteral = String(Double(min(max(visibleBottomFraction, 0), 1)))
         let script = """
         (() => {
+          const visibleBottomFraction = Math.min(Math.max(\(visibleBottomFractionLiteral), 0), 1);
+          const visibleBottom = window.innerHeight * visibleBottomFraction;
+          const visibleHeight = Math.max(visibleBottom, 1);
+          const preferredTop = visibleHeight * 0.05;
+          const nextTextPartThreshold = visibleBottom * 0.85;
+
+          const debugPayload = (action, nextTextPartElement, nextTextPartRect) => ({
+            action,
+            nextTextPartID: nextTextPartElement?.id ?? null,
+            nextTextPartTop: nextTextPartRect?.top ?? null,
+            visibleBottom,
+            distanceToBottom: nextTextPartRect ? (visibleBottom - nextTextPartRect.top) : null,
+            threshold: nextTextPartThreshold,
+            triggerForNext: nextTextPartRect ? nextTextPartRect.top >= nextTextPartThreshold : false
+          });
+
           const startElement = document.getElementById(\(fragmentIDLiteral));
           if (!startElement) {
-            return 'missing';
+            return debugPayload('missing', null, null);
           }
 
           const startStyle = window.getComputedStyle(startElement);
           if (startStyle.display === 'none' || startStyle.visibility === 'hidden') {
-            return 'missing';
+            return debugPayload('missing', null, null);
           }
 
-          const obscuredBottomInset = \(obscuredBottomInsetLiteral);
-          const viewportHeight = Math.max(window.innerHeight - obscuredBottomInset, 1);
-          const startRect = startElement.getBoundingClientRect();
+          const isVisible = element => {
+            if (!element) {
+              return false;
+            }
 
-          const targetTop = viewportHeight * 0.05;
-          const startPastVisibleTop = startRect.top < targetTop;
-          const endPastVisibleBottom = startRect.bottom > viewportHeight * 0.95;
-          if (!startPastVisibleTop && !endPastVisibleBottom) {
-            return 'noop';
+            const style = window.getComputedStyle(element);
+            if (style.display === 'none' || style.visibility === 'hidden') {
+              return false;
+            }
+
+            const rect = element.getBoundingClientRect();
+            return rect.width > 0 || rect.height > 0;
+          };
+
+          const nextTextPartElement = (() => {
+            const identifiedElements = Array.from(document.querySelectorAll('[id]'));
+            const currentIndex = identifiedElements.indexOf(startElement);
+            if (currentIndex < 0) {
+              return null;
+            }
+
+            for (let index = currentIndex + 1; index < identifiedElements.length; index += 1) {
+              const candidate = identifiedElements[index];
+              if (isVisible(candidate)) {
+                return candidate;
+              }
+            }
+
+            return null;
+          })();
+
+          const currentRect = startElement.getBoundingClientRect();
+          const currentStartBeforePreferredTop = currentRect.top < preferredTop;
+          const currentStartPastVisibleBottom = currentRect.top >= visibleBottom;
+          const nextTextPartRect = nextTextPartElement?.getBoundingClientRect() ?? null;
+          const nextTextPartTooCloseToBottom = nextTextPartRect !== null && nextTextPartRect.top >= nextTextPartThreshold;
+
+          if (!currentStartBeforePreferredTop && !currentStartPastVisibleBottom && !nextTextPartTooCloseToBottom) {
+            return debugPayload('noop', nextTextPartElement, nextTextPartRect);
           }
 
-          const delta = startRect.top - targetTop;
+          const delta = currentRect.top - preferredTop;
           if (Math.abs(delta) <= 2) {
-            return 'noop';
+            return debugPayload('noop', nextTextPartElement, nextTextPartRect);
           }
 
           window.scrollBy({ top: delta, behavior: 'smooth' });
-          return 'scrolled';
+          return debugPayload('scrolled', nextTextPartElement, nextTextPartRect);
         })();
         """
 
         let result = await navigator.evaluateJavaScript(script)
         guard case .success(let value) = result,
-              let action = value as? String
+              let payload = value as? [String: Any]
         else {
-            return "failed"
+            print("[AutoScroll] nextTextPart=unavailable action=failed")
+            return
         }
 
-        return action
+        let nextTextPartID = payload["nextTextPartID"] as? String ?? "nil"
+        let nextTextPartTopText = (payload["nextTextPartTop"] as? Double)
+            .map { String(format: "%.1f", $0) } ?? "nil"
+        let visibleBottomText = (payload["visibleBottom"] as? Double)
+            .map { String(format: "%.1f", $0) } ?? "nil"
+        let distanceToBottomText = (payload["distanceToBottom"] as? Double)
+            .map { String(format: "%.1f", $0) } ?? "nil"
+        let thresholdText = (payload["threshold"] as? Double)
+            .map { String(format: "%.1f", $0) } ?? "nil"
+        let triggerForNext = payload["triggerForNext"] as? Bool ?? false
+        let action = payload["action"] as? String ?? "unknown"
+
+        print(
+            "[AutoScroll] nextTextPart=\(nextTextPartID) nextTop=\(nextTextPartTopText) visibleBottom=\(visibleBottomText) distanceToBottom=\(distanceToBottomText) threshold=\(thresholdText) triggerForNext=\(triggerForNext) action=\(action)"
+        )
     }
 
     @MainActor
     private func currentViewportAnchor(with navigator: EPUBNavigatorViewController) async -> EPUBReference? {
+        let visibleBottomFractionLiteral = String(Double(min(max(navigatorVisibleBottomFraction, 0), 1)))
         let script = """
         (() => {
           const href = window.location.pathname.replace(/^\\//, '');
@@ -781,6 +902,8 @@ struct ReaderView: View {
             return null;
           }
 
+          const visibleBottomFraction = Math.min(Math.max(\(visibleBottomFractionLiteral), 0), 1);
+          const visibleBottom = Math.max(window.innerHeight * visibleBottomFraction, 1);
           const sampleRatios = [0.08, 0.12, 0.18, 0.24, 0.32];
           const centerX = Math.min(Math.max(window.innerWidth * 0.5, 1), Math.max(window.innerWidth - 1, 1));
 
@@ -796,7 +919,7 @@ struct ReaderView: View {
           };
 
           for (const ratio of sampleRatios) {
-            const y = Math.min(Math.max(window.innerHeight * ratio, 1), Math.max(window.innerHeight - 1, 1));
+            const y = Math.min(Math.max(visibleBottom * ratio, 1), Math.max(visibleBottom - 1, 1));
             const element = nearestIdentifiedElement(document.elementFromPoint(centerX, y));
             if (element) {
               return { href, fragmentID: element.id };
@@ -812,7 +935,7 @@ struct ReaderView: View {
             }
 
             const rect = element.getBoundingClientRect();
-            if (!(rect.bottom > 0 && rect.top < window.innerHeight)) {
+            if (!(rect.bottom > 0 && rect.top < visibleBottom)) {
               continue;
             }
 
@@ -854,6 +977,7 @@ struct ReaderView: View {
     @MainActor
     private func scrollFragmentIntoPreferredPosition(_ fragmentID: String, with navigator: EPUBNavigatorViewController) async -> Bool {
         let fragmentIDLiteral = javaScriptStringLiteral(fragmentID)
+        let visibleBottomFractionLiteral = String(Double(min(max(navigatorVisibleBottomFraction, 0), 1)))
         let script = """
         (() => {
           const element = document.getElementById(
@@ -868,7 +992,9 @@ struct ReaderView: View {
             return false;
           }
 
-          const targetTop = window.innerHeight * 0.08;
+          const visibleBottomFraction = Math.min(Math.max(\(visibleBottomFractionLiteral), 0), 1);
+          const visibleBottom = Math.max(window.innerHeight * visibleBottomFraction, 1);
+          const targetTop = visibleBottom * 0.08;
           const rect = element.getBoundingClientRect();
           window.scrollTo({ top: window.scrollY + rect.top - targetTop, behavior: 'auto' });
           return true;
@@ -962,9 +1088,12 @@ struct ReaderView: View {
         navigator: EPUBNavigatorViewController
     ) async -> String? {
         let fragmentIDsLiteral = javaScriptArrayLiteral(fragmentIDs)
+        let visibleBottomFractionLiteral = String(Double(min(max(navigatorVisibleBottomFraction, 0), 1)))
         let script = """
         (() => {
           const fragmentIDs = \(fragmentIDsLiteral);
+          const visibleBottomFraction = Math.min(Math.max(\(visibleBottomFractionLiteral), 0), 1);
+          const visibleBottom = Math.max(window.innerHeight * visibleBottomFraction, 1);
 
           const topIntersectingViewport = element => {
             if (!element) {
@@ -977,7 +1106,7 @@ struct ReaderView: View {
             }
 
             const rect = element.getBoundingClientRect();
-            if (!(rect.bottom > 0 && rect.top < window.innerHeight)) {
+            if (!(rect.bottom > 0 && rect.top < visibleBottom)) {
               return null;
             }
 
@@ -1068,9 +1197,12 @@ struct ReaderView: View {
         navigator: EPUBNavigatorViewController
     ) async -> String? {
         let fragmentIDsLiteral = javaScriptArrayLiteral(fragmentIDs)
+        let visibleBottomFractionLiteral = String(Double(min(max(navigatorVisibleBottomFraction, 0), 1)))
         let script = """
         (() => {
           const fragmentIDs = \(fragmentIDsLiteral);
+          const visibleBottomFraction = Math.min(Math.max(\(visibleBottomFractionLiteral), 0), 1);
+          const visibleBottom = Math.max(window.innerHeight * visibleBottomFraction, 1);
 
           var firstForward = null;
           for (const fragmentID of fragmentIDs) {
@@ -1085,7 +1217,7 @@ struct ReaderView: View {
             }
 
             const rect = element.getBoundingClientRect();
-            if (rect.top < window.innerHeight) {
+            if (rect.top < visibleBottom) {
               continue;
             }
 
@@ -1474,10 +1606,18 @@ private func flattenChapterLinks(_ links: [ReadiumShared.Link], level: Int = 0) 
     links.flatMap { [ChapterListItem(level: level, link: $0)] + flattenChapterLinks($0.children, level: level + 1) }
 }
 
-private struct PlaybackBarHeightPreferenceKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
+private struct NavigatorFramePreferenceKey: PreferenceKey {
+    static var defaultValue: CGRect = .zero
 
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+        value = nextValue()
+    }
+}
+
+private struct PlaybackBarFramePreferenceKey: PreferenceKey {
+    static var defaultValue: CGRect = .zero
+
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
         value = nextValue()
     }
 }
