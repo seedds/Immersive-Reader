@@ -36,6 +36,7 @@ struct ReaderView: View {
     @State private var customFontFamilies: [CustomFontStore.ImportedFontFamily] = []
     @State private var layoutPreferenceTransitionID = 0
     @State private var suppressedLocationPersistenceDepth = 0
+    @State private var playbackBarHeight: CGFloat = 0
 
     var body: some View {
         Group {
@@ -110,6 +111,12 @@ struct ReaderView: View {
                                     }
                                 }
                             )
+                            .background {
+                                GeometryReader { proxy in
+                                    Color.clear
+                                        .preference(key: PlaybackBarHeightPreferenceKey.self, value: proxy.size.height)
+                                }
+                            }
                         }
                     }
 
@@ -184,6 +191,7 @@ struct ReaderView: View {
                         applyReaderPreferences(to: navigator)
                     }
                 }
+                .onPreferenceChange(PlaybackBarHeightPreferenceKey.self) { playbackBarHeight = $0 }
 
             case .failed(let message):
                 ContentUnavailableView(
@@ -546,7 +554,7 @@ struct ReaderView: View {
             await navigateToCurrentClip(with: navigator)
         }
 
-        _ = await repositionCurrentClipForPlaybackIfNeeded(with: navigator)
+        _ = await repositionCurrentClipForPlaybackIfNeeded(with: navigator, obscuredBottomInset: playbackBarHeight)
     }
 
     @MainActor
@@ -708,7 +716,10 @@ struct ReaderView: View {
     }
 
     @MainActor
-    private func repositionCurrentClipForPlaybackIfNeeded(with navigator: EPUBNavigatorViewController) async -> String {
+    private func repositionCurrentClipForPlaybackIfNeeded(
+        with navigator: EPUBNavigatorViewController,
+        obscuredBottomInset: CGFloat
+    ) async -> String {
         guard let currentClip = playback.currentClip,
               let fragmentID = currentClip.fragmentID,
               !fragmentID.isEmpty
@@ -717,9 +728,7 @@ struct ReaderView: View {
         }
 
         let fragmentIDLiteral = javaScriptStringLiteral(fragmentID)
-        let endBoundaryFragmentIDLiteral = nextPlaybackBoundaryFragmentID(after: currentClip)
-            .map(javaScriptStringLiteral)
-            ?? "null"
+        let obscuredBottomInsetLiteral = String(Double(max(0, obscuredBottomInset)))
         let script = """
         (() => {
           const startElement = document.getElementById(\(fragmentIDLiteral));
@@ -732,24 +741,13 @@ struct ReaderView: View {
             return 'missing';
           }
 
-          const viewportHeight = window.innerHeight;
+          const obscuredBottomInset = \(obscuredBottomInsetLiteral);
+          const viewportHeight = Math.max(window.innerHeight - obscuredBottomInset, 1);
           const startRect = startElement.getBoundingClientRect();
-          const endBoundaryFragmentID = \(endBoundaryFragmentIDLiteral);
-          let endBoundaryPosition = document.documentElement.getBoundingClientRect().bottom;
-
-          if (endBoundaryFragmentID !== null) {
-            const endBoundaryElement = document.getElementById(endBoundaryFragmentID);
-            if (endBoundaryElement) {
-              const endStyle = window.getComputedStyle(endBoundaryElement);
-              if (endStyle.display !== 'none' && endStyle.visibility !== 'hidden') {
-                endBoundaryPosition = endBoundaryElement.getBoundingClientRect().top;
-              }
-            }
-          }
 
           const targetTop = viewportHeight * 0.05;
           const startPastVisibleTop = startRect.top < targetTop;
-          const endPastVisibleBottom = endBoundaryPosition > viewportHeight * 0.95;
+          const endPastVisibleBottom = startRect.bottom > viewportHeight * 0.95;
           if (!startPastVisibleTop && !endPastVisibleBottom) {
             return 'noop';
           }
@@ -772,29 +770,6 @@ struct ReaderView: View {
         }
 
         return action
-    }
-
-    private func nextPlaybackBoundaryFragmentID(after clip: EPUBMediaOverlayClip) -> String? {
-        guard let currentClipIndex = playback.currentClipIndex,
-              playback.clips.indices.contains(currentClipIndex)
-        else {
-            return nil
-        }
-
-        let currentResourceHref = normalizedResourceHref(for: clip.textResourceHref)
-        for index in playback.clips.indices where index > currentClipIndex {
-            let nextClip = playback.clips[index]
-            guard normalizedResourceHref(for: nextClip.textResourceHref) == currentResourceHref else {
-                return nil
-            }
-
-            if let fragmentID = nextClip.fragmentID,
-               !fragmentID.isEmpty {
-                return fragmentID
-            }
-        }
-
-        return nil
     }
 
     @MainActor
@@ -1497,6 +1472,14 @@ private struct ReaderControlPanel<Content: View>: View {
 
 private func flattenChapterLinks(_ links: [ReadiumShared.Link], level: Int = 0) -> [ChapterListItem] {
     links.flatMap { [ChapterListItem(level: level, link: $0)] + flattenChapterLinks($0.children, level: level + 1) }
+}
+
+private struct PlaybackBarHeightPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
 }
 
 private struct EPUBNavigatorHost: UIViewControllerRepresentable {

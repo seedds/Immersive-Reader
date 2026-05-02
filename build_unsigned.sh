@@ -7,6 +7,8 @@ xcodebuild \
   -sdk iphoneos \
   -derivedDataPath build/DerivedData \
   -clonedSourcePackagesDirPath .build/source-packages \
+  MARKETING_VERSION="${APP_VERSION:-1.0}" \
+  CURRENT_PROJECT_VERSION="${APP_VERSION:-1.0}" \
   CODE_SIGNING_ALLOWED=NO \
   CODE_SIGNING_REQUIRED=NO \
   CODE_SIGN_IDENTITY="" \
