@@ -49,26 +49,24 @@ struct ReaderView: View {
 
             case .ready(_, let navigator):
                 ZStack(alignment: .trailing) {
-                    ZStack(alignment: .bottom) {
-                        EPUBNavigatorHost(
-                            navigator: navigator,
-                            onLocationDidChange: { locator in
-                                handleLocationDidChange(locator, navigator: navigator)
-                            },
-                            onAudioTap: { reference in
-                                Task {
-                                    await playFromTappedReference(reference, navigator: navigator)
-                                }
-                            }
-                        )
-                        .ignoresSafeArea(edges: .bottom)
-                        .background {
-                            GeometryReader { proxy in
-                                Color.clear
-                                    .preference(key: NavigatorFramePreferenceKey.self, value: proxy.frame(in: .global))
+                    EPUBNavigatorHost(
+                        navigator: navigator,
+                        onLocationDidChange: { locator in
+                            handleLocationDidChange(locator, navigator: navigator)
+                        },
+                        onAudioTap: { reference in
+                            Task {
+                                await playFromTappedReference(reference, navigator: navigator)
                             }
                         }
-
+                    )
+                    .background {
+                        GeometryReader { proxy in
+                            Color.clear
+                                .preference(key: NavigatorFramePreferenceKey.self, value: proxy.frame(in: .global))
+                        }
+                    }
+                    .overlay {
                         if isBottomControlPresented {
                             Color.black.opacity(0.001)
                                 .contentShape(Rectangle())
@@ -76,7 +74,8 @@ struct ReaderView: View {
                                     dismissBottomControls()
                                 }
                         }
-
+                    }
+                    .safeAreaInset(edge: .bottom, spacing: 0) {
                         if !playback.clips.isEmpty {
                             MediaOverlayPlaybackBar(
                                 playback: playback,
@@ -794,7 +793,7 @@ struct ReaderView: View {
           const visibleBottom = window.innerHeight * visibleBottomFraction;
           const visibleHeight = Math.max(visibleBottom, 1);
           const preferredTop = visibleHeight * 0.05;
-          const nextTextPartThreshold = visibleBottom * 0.85;
+          const nextTextPartThreshold = visibleBottom * 0.95;
 
           const debugPayload = (action, nextTextPartElement, nextTextPartRect) => ({
             action,
