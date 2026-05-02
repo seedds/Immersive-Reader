@@ -75,12 +75,12 @@ jobs:
           } > release-notes.md
 
       - name: Publish unsigned IPA release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.APP_VERSION }}
           name: ${{ env.APP_VERSION }}
           target_commitish: ${{ github.sha }}
           prerelease: false
           body_path: release-notes.md
-          files: export/ImmersiveReader-unsigned.ipa
+          files: export/ImmersiveReader-${{ env.APP_VERSION }}-unsigned.ipa
           fail_on_unmatched_files: true

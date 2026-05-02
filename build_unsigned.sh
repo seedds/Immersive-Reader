@@ -15,4 +15,4 @@ xcodebuild \
   build && \
   cp -R "build/DerivedData/Build/Products/Release-iphoneos/ImmersiveReader.app" "export/Payload/" && \
   cd export && \
-  zip -r "ImmersiveReader-unsigned.ipa" Payload
+  zip -r "ImmersiveReader-${APP_VERSION:-1.0}-unsigned.ipa" Payload
