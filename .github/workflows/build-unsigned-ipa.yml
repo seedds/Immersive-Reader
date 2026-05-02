@@ -80,7 +80,7 @@ jobs:
           tag_name: ${{ env.APP_VERSION }}
           name: ${{ env.APP_VERSION }}
           target_commitish: ${{ github.sha }}
-          prerelease: true
+          prerelease: false
           body_path: release-notes.md
           files: export/ImmersiveReader-unsigned.ipa
           fail_on_unmatched_files: true
