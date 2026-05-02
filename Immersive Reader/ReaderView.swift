@@ -39,6 +39,7 @@ struct ReaderView: View {
     @State private var navigatorFrame: CGRect = .zero
     @State private var playbackBarFrame: CGRect = .zero
     @State private var lastHandledPlaybackStartClipKey: String?
+    @State private var pendingChapterEntryPlaybackStartClipKey: String?
 
     var body: some View {
         Group {
@@ -509,6 +510,19 @@ struct ReaderView: View {
     }
 
     @MainActor
+    private func navigateToClipResourceTop(_ clip: EPUBMediaOverlayClip, with navigator: EPUBNavigatorViewController) async {
+        let reference = EPUBReference(
+            resourceHref: normalizedResourceHref(for: clip.textResourceHref),
+            fragmentID: nil
+        )
+        guard let locator = locator(for: reference) else {
+            return
+        }
+
+        _ = await navigator.go(to: locator, options: .animated)
+    }
+
+    @MainActor
     private func selectChapter(_ item: ChapterListItem, navigator: EPUBNavigatorViewController) async {
         withAnimation(.easeInOut(duration: 0.2)) {
             isChapterDrawerPresented = false
@@ -516,10 +530,10 @@ struct ReaderView: View {
 
         let wasPlaying = playback.state.isPlaying
         if let clipIndex = firstClipIndex(for: item.link) {
+            let clip = playback.clips[clipIndex]
+            pendingChapterEntryPlaybackStartClipKey = playbackStartClipKey(for: clip)
+            _ = await navigator.go(to: item.link, options: .animated)
             playback.selectClip(at: clipIndex, autoplay: wasPlaying, reason: "chapterSelect")
-            if !wasPlaying {
-                await navigateToCurrentClip(with: navigator)
-            }
             applyCurrentClipDecoration(with: navigator)
             return
         }
@@ -558,25 +572,38 @@ struct ReaderView: View {
         }
 
         let clipKey = playbackStartClipKey(for: currentClip)
+        let usesChapterEntryScrollBehavior = pendingChapterEntryPlaybackStartClipKey == clipKey
         guard lastHandledPlaybackStartClipKey != clipKey else {
             return
         }
         lastHandledPlaybackStartClipKey = clipKey
+        if usesChapterEntryScrollBehavior {
+            pendingChapterEntryPlaybackStartClipKey = nil
+        }
 
         if currentClip.fragmentID?.isEmpty != false {
             if !(await isCurrentClipResourceVisible(with: navigator, clip: currentClip)) {
-                await navigateToCurrentClip(with: navigator)
+                if usesChapterEntryScrollBehavior {
+                    await navigateToClipResourceTop(currentClip, with: navigator)
+                } else {
+                    await navigateToCurrentClip(with: navigator)
+                }
             }
             return
         }
 
         if !(await isCurrentClipResourceVisible(with: navigator, clip: currentClip)) {
-            await navigateToCurrentClip(with: navigator)
+            if usesChapterEntryScrollBehavior {
+                await navigateToClipResourceTop(currentClip, with: navigator)
+            } else {
+                await navigateToCurrentClip(with: navigator)
+            }
         }
 
         _ = await repositionCurrentClipForPlaybackIfNeeded(
             with: navigator,
-            visibleBottomFraction: navigatorVisibleBottomFraction
+            visibleBottomFraction: navigatorVisibleBottomFraction,
+            pinCurrentClipToPreferredTop: !usesChapterEntryScrollBehavior
         )
     }
 
@@ -728,6 +755,26 @@ struct ReaderView: View {
             return
         }
 
+        let newClip = playback.clips[newIndex]
+        let newClipKey = playbackStartClipKey(for: newClip)
+        var markedChapterEntryPlaybackStart = false
+        if let oldIndex,
+           playback.clips.indices.contains(oldIndex) {
+            let oldResourceHref = normalizedResourceHref(for: playback.clips[oldIndex].textResourceHref)
+            let newResourceHref = normalizedResourceHref(for: newClip.textResourceHref)
+            if oldResourceHref != newResourceHref,
+               firstClipIndex(forResourceHref: newResourceHref) == newIndex {
+                pendingChapterEntryPlaybackStartClipKey = newClipKey
+                markedChapterEntryPlaybackStart = true
+            }
+        }
+
+        if !markedChapterEntryPlaybackStart,
+           pendingChapterEntryPlaybackStartClipKey != nil,
+           pendingChapterEntryPlaybackStartClipKey != newClipKey {
+            pendingChapterEntryPlaybackStartClipKey = nil
+        }
+
         if playback.state.isPlaying,
            oldIndex != newIndex {
             Task {
@@ -776,7 +823,8 @@ struct ReaderView: View {
     @MainActor
     private func repositionCurrentClipForPlaybackIfNeeded(
         with navigator: EPUBNavigatorViewController,
-        visibleBottomFraction: CGFloat
+        visibleBottomFraction: CGFloat,
+        pinCurrentClipToPreferredTop: Bool
     ) async {
         guard let currentClip = playback.currentClip,
               let fragmentID = currentClip.fragmentID,
@@ -787,9 +835,11 @@ struct ReaderView: View {
 
         let fragmentIDLiteral = javaScriptStringLiteral(fragmentID)
         let visibleBottomFractionLiteral = String(Double(min(max(visibleBottomFraction, 0), 1)))
+        let pinCurrentClipToPreferredTopLiteral = pinCurrentClipToPreferredTop ? "true" : "false"
         let script = """
         (() => {
           const visibleBottomFraction = Math.min(Math.max(\(visibleBottomFractionLiteral), 0), 1);
+          const pinCurrentClipToPreferredTop = \(pinCurrentClipToPreferredTopLiteral);
           const visibleBottom = window.innerHeight * visibleBottomFraction;
           const visibleHeight = Math.max(visibleBottom, 1);
           const preferredTop = visibleHeight * 0.05;
@@ -847,16 +897,17 @@ struct ReaderView: View {
           })();
 
           const currentRect = startElement.getBoundingClientRect();
-          const currentStartBeforePreferredTop = currentRect.top < preferredTop;
-          const currentStartPastVisibleBottom = currentRect.top >= visibleBottom;
           const nextTextPartRect = nextTextPartElement?.getBoundingClientRect() ?? null;
           const nextTextPartTooCloseToBottom = nextTextPartRect !== null && nextTextPartRect.top >= nextTextPartThreshold;
+          const currentStartBeforePreferredTop = currentRect.top < preferredTop;
+          const currentStartPastVisibleBottom = currentRect.top >= visibleBottom;
 
-          if (!currentStartBeforePreferredTop && !currentStartPastVisibleBottom && !nextTextPartTooCloseToBottom) {
+          if (!nextTextPartTooCloseToBottom && (!pinCurrentClipToPreferredTop || !currentStartBeforePreferredTop && !currentStartPastVisibleBottom)) {
             return debugPayload('noop', nextTextPartElement, nextTextPartRect);
           }
 
-          const delta = currentRect.top - preferredTop;
+          const targetTop = pinCurrentClipToPreferredTop ? preferredTop : Math.max(0, Math.min(currentRect.top, preferredTop));
+          const delta = currentRect.top - targetTop;
           if (Math.abs(delta) <= 2) {
             return debugPayload('noop', nextTextPartElement, nextTextPartRect);
           }
