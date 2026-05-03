@@ -50,7 +50,7 @@ final class MediaOverlayPlaybackController: ObservableObject {
         return clips[currentClipIndex]
     }
 
-    func load(from jsonURL: URL?) {
+    func load(from jsonURL: URL?) async {
         stop(reason: "load")
         cachedAudioDurations = [:]
 
@@ -63,27 +63,9 @@ final class MediaOverlayPlaybackController: ObservableObject {
         }
 
         do {
-            let data = try Data(contentsOf: jsonURL)
-            let manifest = try JSONDecoder().decode(EPUBMediaOverlayManifest.self, from: data)
-            let extractedDirectoryURL = jsonURL.deletingLastPathComponent()
-            clips = manifest.documents
-                .flatMap(\.clips)
-                .compactMap { clip in
-                    var resolvedClip = clip
-                    let audioFileURL: URL
-                    if clip.audioPath.hasPrefix("/") {
-                        audioFileURL = URL(fileURLWithPath: clip.audioPath)
-                    } else {
-                        audioFileURL = extractedDirectoryURL.appendingPathComponent(clip.audioPath, isDirectory: false)
-                    }
-
-                    guard FileManager.default.fileExists(atPath: audioFileURL.path) else {
-                        return nil
-                    }
-
-                    resolvedClip.audioPath = audioFileURL.path
-                    return resolvedClip
-                }
+            clips = try await Task.detached(priority: .userInitiated) {
+                try Self.resolvedClips(from: jsonURL)
+            }.value
             currentClipIndex = nil
             state = clips.isEmpty ? .unavailable : .ready
             scheduleRefreshJumpAvailability()
@@ -93,6 +75,31 @@ final class MediaOverlayPlaybackController: ObservableObject {
             state = .failed(error.localizedDescription)
             scheduleRefreshJumpAvailability()
         }
+    }
+
+    nonisolated private static func resolvedClips(from jsonURL: URL) throws -> [EPUBMediaOverlayClip] {
+        let data = try Data(contentsOf: jsonURL)
+        let manifest = try JSONDecoder().decode(EPUBMediaOverlayManifest.self, from: data)
+        let extractedDirectoryURL = jsonURL.deletingLastPathComponent()
+
+        return manifest.documents
+            .flatMap(\.clips)
+            .compactMap { clip in
+                var resolvedClip = clip
+                let audioFileURL: URL
+                if clip.audioPath.hasPrefix("/") {
+                    audioFileURL = URL(fileURLWithPath: clip.audioPath)
+                } else {
+                    audioFileURL = extractedDirectoryURL.appendingPathComponent(clip.audioPath, isDirectory: false)
+                }
+
+                guard FileManager.default.fileExists(atPath: audioFileURL.path) else {
+                    return nil
+                }
+
+                resolvedClip.audioPath = audioFileURL.path
+                return resolvedClip
+            }
     }
 
     func togglePlayback() {

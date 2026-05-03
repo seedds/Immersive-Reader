@@ -47,11 +47,13 @@ final class LocalUploadServer {
     var onError: ((String) -> Void)?
 
     private let queue = DispatchQueue(label: "ImmersiveReader.LocalUploadServer")
+    private let queueKey = DispatchSpecificKey<Void>()
     private var listener: NWListener?
     private var connections: [ObjectIdentifier: HTTPUploadConnection] = [:]
 
     init(port: UInt16 = 80) {
         self.port = port
+        queue.setSpecific(key: queueKey, value: ())
     }
 
     func start() throws {
@@ -82,10 +84,21 @@ final class LocalUploadServer {
     }
 
     func stop() {
+        if DispatchQueue.getSpecific(key: queueKey) != nil {
+            stopOnQueue()
+        } else {
+            queue.sync {
+                stopOnQueue()
+            }
+        }
+    }
+
+    private func stopOnQueue() {
         listener?.cancel()
         listener = nil
-        connections.values.forEach { $0.cancel() }
+        let activeConnections = Array(connections.values)
         connections.removeAll()
+        activeConnections.forEach { $0.cancel() }
     }
 
     private func accept(_ connection: NWConnection) {

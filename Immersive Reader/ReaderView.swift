@@ -255,7 +255,7 @@ struct ReaderView: View {
         try? modelContext.save()
         playback.setPlaybackRate(readerPlaybackSpeed)
         playback.setJumpInterval(readerPlaybackJumpInterval)
-        playback.load(from: try? book.resolvedMediaOverlayJSONURL())
+        await playback.load(from: try? book.resolvedMediaOverlayJSONURL())
         customFontFamilies = CustomFontStore.allFamilies()
 
         do {
@@ -917,29 +917,7 @@ struct ReaderView: View {
         })();
         """
 
-        let result = await navigator.evaluateJavaScript(script)
-        guard case .success(let value) = result,
-              let payload = value as? [String: Any]
-        else {
-            print("[AutoScroll] nextTextPart=unavailable action=failed")
-            return
-        }
-
-        let nextTextPartID = payload["nextTextPartID"] as? String ?? "nil"
-        let nextTextPartTopText = (payload["nextTextPartTop"] as? Double)
-            .map { String(format: "%.1f", $0) } ?? "nil"
-        let visibleBottomText = (payload["visibleBottom"] as? Double)
-            .map { String(format: "%.1f", $0) } ?? "nil"
-        let distanceToBottomText = (payload["distanceToBottom"] as? Double)
-            .map { String(format: "%.1f", $0) } ?? "nil"
-        let thresholdText = (payload["threshold"] as? Double)
-            .map { String(format: "%.1f", $0) } ?? "nil"
-        let triggerForNext = payload["triggerForNext"] as? Bool ?? false
-        let action = payload["action"] as? String ?? "unknown"
-
-        print(
-            "[AutoScroll] nextTextPart=\(nextTextPartID) nextTop=\(nextTextPartTopText) visibleBottom=\(visibleBottomText) distanceToBottom=\(distanceToBottomText) threshold=\(thresholdText) triggerForNext=\(triggerForNext) action=\(action)"
-        )
+        _ = await navigator.evaluateJavaScript(script)
     }
 
     @MainActor
@@ -1697,6 +1675,10 @@ private struct EPUBNavigatorHost: UIViewControllerRepresentable {
         uiViewController.delegate = context.coordinator
     }
 
+    static func dismantleUIViewController(_ uiViewController: EPUBNavigatorViewController, coordinator: Coordinator) {
+        coordinator.detach(from: uiViewController)
+    }
+
     final class Coordinator: NSObject, EPUBNavigatorDelegate, UIGestureRecognizerDelegate, WKScriptMessageHandler {
         private enum BoundaryEdge {
             case top
@@ -1706,6 +1688,7 @@ private struct EPUBNavigatorHost: UIViewControllerRepresentable {
         var onLocationDidChange: (Locator) -> Void
         var onAudioTap: (EPUBReference) -> Void
         private weak var navigator: EPUBNavigatorViewController?
+        private weak var userContentController: WKUserContentController?
         private var panRecognizer: UIPanGestureRecognizer?
         private var currentViewport: EPUBNavigatorViewController.Viewport?
         private var armedBoundaryEdge: BoundaryEdge?
@@ -1738,6 +1721,25 @@ private struct EPUBNavigatorHost: UIViewControllerRepresentable {
             }
         }
 
+        func detach(from navigator: EPUBNavigatorViewController? = nil) {
+            let navigator = navigator ?? self.navigator
+            if let navigator,
+               let panRecognizer {
+                navigator.view.removeGestureRecognizer(panRecognizer)
+            }
+            panRecognizer = nil
+
+            if let navigator,
+               navigator.delegate === self {
+                navigator.delegate = nil
+            }
+
+            userContentController?.removeScriptMessageHandler(forName: audioTapMessageName)
+            userContentController = nil
+            currentViewport = nil
+            self.navigator = nil
+        }
+
         func navigator(_ navigator: Navigator, locationDidChange locator: Locator) {
             onLocationDidChange(locator)
         }
@@ -1752,6 +1754,7 @@ private struct EPUBNavigatorHost: UIViewControllerRepresentable {
         }
 
         func navigator(_ navigator: EPUBNavigatorViewController, setupUserScripts userContentController: WKUserContentController) {
+            self.userContentController = userContentController
             userContentController.removeScriptMessageHandler(forName: audioTapMessageName)
             userContentController.add(self, name: audioTapMessageName)
             userContentController.addUserScript(
