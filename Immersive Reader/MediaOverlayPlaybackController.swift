@@ -132,17 +132,17 @@ final class MediaOverlayPlaybackController: ObservableObject {
         start(clip, reason: reason, transitionID: transitionID)
     }
 
-    func pause(reason: String = "directPause") {
-        player?.pause()
+     func pause(reason: String = "directPause") {
+         player?.pause()
+         currentTransitionID = nil
+         if clips.isEmpty {
+             state = .unavailable
+         } else {
+             state = .paused
+         }
         deactivateAudioSession(reason: "pause[\(reason)]")
-        currentTransitionID = nil
-        if clips.isEmpty {
-            state = .unavailable
-        } else {
-            state = .paused
-        }
-        scheduleRefreshJumpAvailability()
-    }
+         scheduleRefreshJumpAvailability()
+     }
 
     func stop(reason: String = "directStop") {
         player?.pause()

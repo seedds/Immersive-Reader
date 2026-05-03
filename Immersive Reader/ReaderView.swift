@@ -90,14 +90,13 @@ struct ReaderView: View {
                                 isReaderSettingsControlPresented: $isReaderSettingsControlPresented,
                                 toggleSpeedControl: togglePlaybackSpeedControl,
                                 toggleReaderSettingsControl: toggleReaderSettingsControl,
-                                playPause: {
-                                    if playback.state.isPlaying {
-                                        playback.pause(reason: "playPauseButton.pause")
-                                        applyCurrentClipDecoration(with: navigator)
-                                    } else if playback.currentClipIndex != nil {
-                                        playback.play(reason: "playPauseButton.resumeCurrentClip")
-                                    } else {
-                                        Task {
+                                 playPause: {
+                                     if playback.state.isPlaying {
+                                         playback.pause(reason: "playPauseButton.pause")
+                                     } else if playback.currentClipIndex != nil {
+                                         playback.play(reason: "playPauseButton.resumeCurrentClip")
+                                     } else {
+                                         Task {
                                             await startPlaybackFromVisibleOrForwardPosition(with: navigator)
                                         }
                                     }
