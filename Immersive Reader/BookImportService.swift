@@ -731,6 +731,10 @@ enum BookImportService {
     ) -> Bool {
         let fileManager = FileManager.default
         let fileSizeMatches = fingerprint.fileSize == existingBook.sourceFileSize
+        let modifiedAtMatches = modificationDatesMatch(
+            fingerprint.modifiedAt,
+            existingBook.sourceFileModifiedAt
+        )
         let storedFilename = AppStorage.sanitizedFilename(existingBook.originalFilename)
         let libraryFilename = libraryFileURL.lastPathComponent
         let filenameMatches = storedFilename == libraryFilename
@@ -739,6 +743,7 @@ enum BookImportService {
         let extractedExists = (try? AppStorage.extractedDirectory(for: existingBook.id))
             .map { fileManager.fileExists(atPath: $0.path) } ?? false
         guard fileSizeMatches,
+              modifiedAtMatches,
               filenameMatches,
               epubExists,
               extractedExists
@@ -755,6 +760,14 @@ enum BookImportService {
         }
 
         return true
+    }
+
+    nonisolated private static func modificationDatesMatch(_ lhs: Date?, _ rhs: Date?) -> Bool {
+        guard let lhs, let rhs else {
+            return false
+        }
+
+        return abs(lhs.timeIntervalSince(rhs)) <= 3
     }
 
     nonisolated private static func sourceFileFingerprint(for url: URL) throws -> SourceFileFingerprint {
